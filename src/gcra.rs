@@ -45,14 +45,16 @@ pub fn check_gcra(
     burst_offset: Nanos,
     cost: u32,
 ) -> Result<(Nanos, RateLimitInfo), RateLimited> {
+    let limit = (burst_offset / emission_interval) as u32;
     let tat = tat.unwrap_or(now);
-    let new_tat = tat.max(now) + emission_interval * cost as Nanos;
+    let increment = emission_interval.saturating_mul(cost as Nanos);
+    let new_tat = tat.max(now) + increment;
     let allow_at = new_tat.saturating_sub(burst_offset);
 
     if allow_at > now {
         let retry_after_nanos = allow_at - now;
         return Err(RateLimited {
-            limit: (burst_offset / emission_interval) as u32,
+            limit,
             retry_after: Duration::from_nanos(retry_after_nanos),
             reset_at: new_tat,
         });
@@ -60,7 +62,6 @@ pub fn check_gcra(
 
     let diff = burst_offset.saturating_sub(new_tat.saturating_sub(now));
     let remaining = (diff / emission_interval) as u32;
-    let limit = (burst_offset / emission_interval) as u32;
 
     Ok((
         new_tat,
