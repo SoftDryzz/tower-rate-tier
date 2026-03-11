@@ -30,6 +30,7 @@ use crate::tier::RateTier;
 ///
 /// Requests exceeding [`max_body_size`](Self::max_body_size) (default: 64KB)
 /// are immediately rejected with 413 Payload Too Large.
+#[derive(Clone)]
 pub struct BufferedTierLimitLayer {
     pub(crate) rate_tier: Arc<RateTier>,
     pub(crate) identifier: Arc<dyn TierIdentifier>,
