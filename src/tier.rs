@@ -63,6 +63,11 @@ impl RateTier {
         self.clock.as_ref()
     }
 
+    /// Get a reference to the storage backend.
+    pub fn storage(&self) -> &dyn Storage {
+        self.storage.as_ref()
+    }
+
     /// Programmatic rate limit check (non-HTTP).
     ///
     /// Returns `Ok(info)` if allowed, `Err(limited)` if denied.
