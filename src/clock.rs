@@ -1,0 +1,150 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+use crate::quota::Nanos;
+
+/// Abstraction over time for testability.
+///
+/// Implementations must be thread-safe (`Send + Sync`).
+pub trait Clock: Send + Sync + 'static {
+    /// Returns the current time in nanoseconds since an arbitrary epoch.
+    fn now(&self) -> Nanos;
+}
+
+/// Real clock backed by `tokio::time::Instant`.
+///
+/// Uses a fixed epoch (created at construction time) and measures elapsed
+/// nanoseconds from that point.
+pub struct SystemClock {
+    epoch: tokio::time::Instant,
+}
+
+impl SystemClock {
+    pub fn new() -> Self {
+        Self {
+            epoch: tokio::time::Instant::now(),
+        }
+    }
+}
+
+impl Default for SystemClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Clock for SystemClock {
+    fn now(&self) -> Nanos {
+        self.epoch.elapsed().as_nanos() as Nanos
+    }
+}
+
+/// Fake clock for deterministic testing.
+///
+/// Starts at time 0. Use [`advance`](FakeClock::advance) to move time forward.
+///
+/// # Examples
+///
+/// ```
+/// use tower_rate_tier::clock::FakeClock;
+/// use tower_rate_tier::clock::Clock;
+/// use std::time::Duration;
+///
+/// let clock = FakeClock::new();
+/// assert_eq!(clock.now(), 0);
+///
+/// clock.advance(Duration::from_secs(60));
+/// assert_eq!(clock.now(), 60_000_000_000);
+/// ```
+#[derive(Clone)]
+pub struct FakeClock {
+    nanos: Arc<AtomicU64>,
+}
+
+impl FakeClock {
+    pub fn new() -> Self {
+        Self {
+            nanos: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// Advance the clock by the given duration.
+    pub fn advance(&self, duration: Duration) {
+        self.nanos
+            .fetch_add(duration.as_nanos() as u64, Ordering::SeqCst);
+    }
+
+    /// Set the clock to an absolute nanosecond value.
+    pub fn set(&self, nanos: Nanos) {
+        self.nanos.store(nanos, Ordering::SeqCst);
+    }
+}
+
+impl Default for FakeClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Clock for FakeClock {
+    fn now(&self) -> Nanos {
+        self.nanos.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fake_clock_starts_at_zero() {
+        let clock = FakeClock::new();
+        assert_eq!(clock.now(), 0);
+    }
+
+    #[test]
+    fn fake_clock_advance() {
+        let clock = FakeClock::new();
+        clock.advance(Duration::from_secs(60));
+        assert_eq!(clock.now(), 60_000_000_000);
+    }
+
+    #[test]
+    fn fake_clock_advance_accumulates() {
+        let clock = FakeClock::new();
+        clock.advance(Duration::from_secs(30));
+        clock.advance(Duration::from_secs(30));
+        assert_eq!(clock.now(), 60_000_000_000);
+    }
+
+    #[test]
+    fn fake_clock_set() {
+        let clock = FakeClock::new();
+        clock.set(123_456_789);
+        assert_eq!(clock.now(), 123_456_789);
+    }
+
+    #[test]
+    fn fake_clock_clone_shares_state() {
+        let clock1 = FakeClock::new();
+        let clock2 = clock1.clone();
+        clock1.advance(Duration::from_secs(10));
+        assert_eq!(clock2.now(), 10_000_000_000);
+    }
+
+    #[test]
+    fn system_clock_monotonic() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let clock = SystemClock::new();
+            let t0 = clock.now();
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let t1 = clock.now();
+            assert!(t1 > t0);
+        });
+    }
+}
