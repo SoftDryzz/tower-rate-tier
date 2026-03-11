@@ -1,8 +1,12 @@
 #![cfg(feature = "buffered-body")]
 
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use http::{HeaderMap, Request, Response, StatusCode};
+use http_body::Frame;
 use http_body_util::Full;
 use tower_layer::Layer;
 use tower_rate_tier::clock::FakeClock;
@@ -152,4 +156,36 @@ async fn invalid_body_falls_to_on_missing() {
     let resp = svc.call(req).await.unwrap();
     // UseDefault with default_tier("free") → rate limited as anonymous
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+/// A body that always errors when polled.
+struct ErrorBody;
+
+impl http_body::Body for ErrorBody {
+    type Data = Bytes;
+    type Error = Box<dyn std::error::Error + Send + Sync>;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        Poll::Ready(Some(Err("simulated body read error".into())))
+    }
+}
+
+#[tokio::test]
+async fn body_read_error_returns_400() {
+    let clock = FakeClock::new();
+    clock.set(1_000_000_000);
+
+    let layer = make_buffered_layer(clock);
+    let mut svc = layer.layer(EchoService);
+
+    let req = Request::builder()
+        .header("Content-Type", "application/json")
+        .body(ErrorBody)
+        .unwrap();
+
+    let resp = svc.call(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }

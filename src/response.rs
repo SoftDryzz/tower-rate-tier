@@ -73,6 +73,15 @@ fn header_value_from_nanos(nanos: u64) -> HeaderValue {
     HeaderValue::from(secs)
 }
 
+/// Build a 400 Bad Request response for body read errors.
+pub fn bad_request_response() -> Response<String> {
+    Response::builder()
+        .status(StatusCode::BAD_REQUEST)
+        .header("Content-Type", "application/json")
+        .body(r#"{"error":"failed to read request body"}"#.to_string())
+        .unwrap()
+}
+
 fn canonical_reason(status: StatusCode) -> &'static str {
     status.canonical_reason().unwrap_or("request denied")
 }

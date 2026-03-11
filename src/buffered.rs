@@ -115,20 +115,17 @@ where
             // Split request to buffer body separately
             let (parts, body) = req.into_parts();
 
-            // Collect the body with size limit
-            let collected = body
-                .collect()
-                .await
-                .map(|c| c.to_bytes())
-                .map_err(|_| ());
-
-            let body_bytes = match collected {
-                Ok(bytes) if bytes.len() > max_body_size => {
-                    return Ok(payload_too_large_response().map(Into::into));
+            // Collect the body
+            let body_bytes = match body.collect().await {
+                Ok(collected) => {
+                    let bytes = collected.to_bytes();
+                    if bytes.len() > max_body_size {
+                        return Ok(payload_too_large_response().map(Into::into));
+                    }
+                    bytes
                 }
-                Ok(bytes) => bytes,
-                Err(()) => {
-                    return Ok(payload_too_large_response().map(Into::into));
+                Err(_) => {
+                    return Ok(response::bad_request_response().map(Into::into));
                 }
             };
 
