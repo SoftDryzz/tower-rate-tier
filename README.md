@@ -127,11 +127,11 @@ async fn test_rate_limit_expiry() {
         .tier("free", Quota::per_hour(1))
         .build();
 
-    assert!(limiter.check("user1", "free", 1).is_ok());
-    assert!(limiter.check("user1", "free", 1).is_err());
+    assert!(limiter.check("user1", "free", 1).await.unwrap().is_ok());
+    assert!(limiter.check("user1", "free", 1).await.unwrap().is_err());
 
     clock.advance(Duration::from_secs(3600));
-    assert!(limiter.check("user1", "free", 1).is_ok());
+    assert!(limiter.check("user1", "free", 1).await.unwrap().is_ok());
 }
 ```
 

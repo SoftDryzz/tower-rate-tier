@@ -29,6 +29,7 @@ use crate::tier::RateTier;
 ///         Some(TierIdentity::new(key, "free"))
 ///     });
 /// ```
+#[derive(Clone)]
 pub struct TierLimitLayer {
     pub(crate) rate_tier: Arc<RateTier>,
     pub(crate) identifier: Arc<dyn TierIdentifier>,
