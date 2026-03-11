@@ -1,0 +1,35 @@
+[package]
+name = "tower-rate-tier"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Tier-based rate limiting middleware for Tower"
+repository = "https://github.com/SoftDryzz/tower-rate-tier"
+keywords = ["tower", "rate-limit", "middleware", "tier", "gcra"]
+categories = ["web-programming", "network-programming"]
+
+[dependencies]
+tower = { version = "0.5", features = ["util"] }
+tower-layer = "0.3"
+tower-service = "0.3"
+http = "1"
+http-body = "1"
+bytes = "1"
+dashmap = "6"
+tokio = { version = "1", features = ["time"] }
+pin-project-lite = "0.2"
+async-trait = "0.1"
+http-body-util = { version = "0.1", optional = true }
+redis = { version = "0.27", features = ["tokio-comp"], optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["full", "test-util"] }
+hyper = "1"
+
+[features]
+default = []
+redis = ["dep:redis"]
+buffered-body = ["dep:http-body-util"]
