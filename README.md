@@ -4,7 +4,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/tower-rate-tier.svg)](https://crates.io/crates/tower-rate-tier)
 [![Documentation](https://docs.rs/tower-rate-tier/badge.svg)](https://docs.rs/tower-rate-tier)
-[![License](https://img.shields.io/crates/l/tower-rate-tier.svg)](LICENSE)
+[![License](https://img.shields.io/crates/l/tower-rate-tier.svg)](LICENSE-MIT)
 
 Every SaaS API needs rate limiting by user plan (free/pro/enterprise). `tower-rate-tier` eliminates the 200-400 lines of custom middleware you'd otherwise write.
 
@@ -14,7 +14,7 @@ Every SaaS API needs rate limiting by user plan (free/pro/enterprise). `tower-ra
 - **Request cost/weight** — Expensive endpoints consume more quota (`/export` = 20, `/search` = 5)
 - **Async identifier** — Extract `(user_id, tier)` from headers, JWT, API keys, or request body
 - **GCRA algorithm** — Smooth rate enforcement, no burst-at-boundary issues (used by Stripe, GitHub, Shopify)
-- **Pluggable storage** — In-memory (DashMap) or Redis for distributed setups
+- **Pluggable storage** — In-memory (DashMap) with automatic GC, Redis planned for v0.2
 - **Testable clock** — Deterministic time control in tests with `FakeClock`
 - **Standard headers** — `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`, `Retry-After`
 - **Tower-native** — Works with Axum, Tonic, Hyper, or any Tower-based framework
@@ -105,12 +105,11 @@ Content-Type: application/json
 ## Optional Features
 
 ```toml
-# Redis support for distributed rate limiting
-tower-rate-tier = { version = "0.1", features = ["redis"] }
-
 # Body-based identification (opt-in, buffers request body)
 tower-rate-tier = { version = "0.1", features = ["buffered-body"] }
 ```
+
+> Redis support for distributed rate limiting is planned for v0.2.
 
 ## Testing
 
@@ -149,7 +148,7 @@ let tier = RateTier::builder()
 
 ## Storage Error Behavior
 
-When Redis is unavailable:
+Configure behavior when the storage backend fails:
 
 ```rust
 let layer = TierLimitLayer::new(tier)
@@ -165,7 +164,7 @@ let layer = TierLimitLayer::new(tier)
 | Request cost/weight | No | No | No | **Yes** |
 | Async identifier | No | Partial | No | **Yes** |
 | Body-based identification | No | No | No | **Yes** |
-| Distributed (Redis) | No | No | No | **Yes** |
+| Distributed (Redis) | No | No | No | **Planned v0.2** |
 | Testable clock | No | Yes | No | **Yes** |
 | Tower-compatible | Yes | Axum only | Axum only | **Yes** |
 | Algorithm | GCRA | Token bucket | GCRA | **GCRA** |
