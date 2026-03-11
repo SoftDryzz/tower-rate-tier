@@ -21,7 +21,7 @@ Core library with in-memory storage and full Tower integration.
 - [x] Body-based identification (feature-gated: `buffered-body`)
 - [x] Examples: `axum_basic`, `axum_jwt`
 - [x] README with usage guide
-- [ ] Published to crates.io
+- [x] Published to crates.io
 
 ## v0.2.0 — Distributed & Observability
 
