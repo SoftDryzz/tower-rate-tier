@@ -3,7 +3,7 @@ use dashmap::DashMap;
 
 use crate::gcra::{check_gcra, RateLimitInfo, RateLimited};
 use crate::quota::{Nanos, Quota};
-use crate::storage::Storage;
+use crate::storage::{Storage, StorageError};
 
 /// In-memory rate limit storage backed by `DashMap`.
 ///
@@ -52,19 +52,19 @@ impl Storage for MemoryStorage {
         quota: &Quota,
         cost: u32,
         now: Nanos,
-    ) -> Result<RateLimitInfo, RateLimited> {
+    ) -> Result<Result<RateLimitInfo, RateLimited>, StorageError> {
         let ei = quota.emission_interval_nanos();
         let bo = quota.burst_offset_nanos();
 
         let mut entry = self.state.entry(key.to_owned()).or_insert(now);
         let current_tat = *entry.value();
 
-        match check_gcra(Some(current_tat), now, ei, bo, cost) {
+        Ok(match check_gcra(Some(current_tat), now, ei, bo, cost) {
             Ok((new_tat, info)) => {
                 *entry.value_mut() = new_tat;
                 Ok(info)
             }
             Err(limited) => Err(limited),
-        }
+        })
     }
 }

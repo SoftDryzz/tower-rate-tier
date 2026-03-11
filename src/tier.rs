@@ -5,6 +5,7 @@ use std::time::Duration;
 use crate::clock::{Clock, SystemClock};
 use crate::gc::GcHandle;
 use crate::gcra::{RateLimitInfo, RateLimited};
+use crate::storage::StorageError;
 use crate::on_missing::OnMissing;
 use crate::quota::Quota;
 use crate::storage::memory::MemoryStorage;
@@ -63,27 +64,33 @@ impl RateTier {
         self.clock.as_ref()
     }
 
+    /// Get a reference to the storage backend.
+    pub fn storage(&self) -> &dyn Storage {
+        self.storage.as_ref()
+    }
+
     /// Programmatic rate limit check (non-HTTP).
     ///
-    /// Returns `Ok(info)` if allowed, `Err(limited)` if denied.
-    /// Unlimited tiers always return `Ok` without touching storage.
+    /// Returns `Ok(Ok(info))` if allowed, `Ok(Err(limited))` if denied,
+    /// `Err(StorageError)` if the storage backend fails.
+    /// Unlimited tiers always return `Ok(Ok(...))` without touching storage.
     pub async fn check(
         &self,
         user_id: &str,
         tier_name: &str,
         cost: u32,
-    ) -> Result<RateLimitInfo, RateLimited> {
+    ) -> Result<Result<RateLimitInfo, RateLimited>, StorageError> {
         let quota = self
             .tiers
             .get(tier_name)
             .unwrap_or_else(|| panic!("unknown tier: {}", tier_name));
 
         if quota.is_unlimited() {
-            return Ok(RateLimitInfo {
+            return Ok(Ok(RateLimitInfo {
                 limit: 0,
                 remaining: 0,
                 reset_at: 0,
-            });
+            }));
         }
 
         let now = self.clock.now();
