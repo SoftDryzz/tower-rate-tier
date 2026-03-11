@@ -85,6 +85,27 @@ impl TierLimitLayer {
         self.on_storage_error = policy;
         self
     }
+
+    /// Enable body-based identification.
+    ///
+    /// When enabled, the middleware buffers the request body before identification,
+    /// allowing [`TierIdentifier::identify_with_body`] to inspect body contents.
+    /// The body is reconstructed as `Full<Bytes>` for the downstream service.
+    ///
+    /// Requires the `buffered-body` feature.
+    ///
+    /// # Default body size limit
+    ///
+    /// 64KB. Override with [`BufferedTierLimitLayer::max_body_size`].
+    #[cfg(feature = "buffered-body")]
+    pub fn buffer_body(self) -> crate::buffered::BufferedTierLimitLayer {
+        crate::buffered::BufferedTierLimitLayer {
+            rate_tier: self.rate_tier,
+            identifier: self.identifier,
+            on_storage_error: self.on_storage_error,
+            max_body_size: 64 * 1024,
+        }
+    }
 }
 
 impl<S> Layer<S> for TierLimitLayer {

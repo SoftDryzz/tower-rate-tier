@@ -12,6 +12,9 @@ pub mod service;
 pub mod storage;
 pub mod tier;
 
+#[cfg(feature = "buffered-body")]
+pub mod buffered;
+
 pub use cost::{tier_cost, TierCost};
 pub use gcra::{RateLimitInfo, RateLimited};
 pub use identifier::{TierIdentifier, TierIdentity};
@@ -21,3 +24,6 @@ pub use on_storage_error::OnStorageError;
 pub use quota::{Nanos, Quota};
 pub use storage::StorageError;
 pub use tier::RateTier;
+
+#[cfg(feature = "buffered-body")]
+pub use buffered::{BufferedTierLimitLayer, BufferedTierLimitService};
