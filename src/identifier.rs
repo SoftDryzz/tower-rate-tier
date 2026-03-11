@@ -5,11 +5,14 @@ use http::HeaderMap;
 /// The result of identifying a user and their tier from a request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TierIdentity {
+    /// Unique identifier for the user (e.g. API key, account ID).
     pub user_id: String,
+    /// Name of the tier this user belongs to (e.g. "free", "pro").
     pub tier: String,
 }
 
 impl TierIdentity {
+    /// Creates a new `TierIdentity` from a user ID and tier name.
     pub fn new(user_id: impl Into<String>, tier: impl Into<String>) -> Self {
         Self {
             user_id: user_id.into(),

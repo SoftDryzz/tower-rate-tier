@@ -1,3 +1,4 @@
+/// In-memory storage backend using `DashMap`.
 pub mod memory;
 
 use std::fmt;

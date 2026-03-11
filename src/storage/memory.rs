@@ -14,6 +14,7 @@ pub struct MemoryStorage {
 }
 
 impl MemoryStorage {
+    /// Creates a new empty `MemoryStorage`.
     pub fn new() -> Self {
         Self {
             state: DashMap::new(),

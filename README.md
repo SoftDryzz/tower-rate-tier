@@ -2,9 +2,9 @@
 
 **Tier-based rate limiting middleware for Tower.**
 
-[![Crates.io](https://img.shields.io/crates/v/tower-rate-tier.svg)](https://crates.io/crates/tower-rate-tier)
-[![Documentation](https://docs.rs/tower-rate-tier/badge.svg)](https://docs.rs/tower-rate-tier)
-[![License](https://img.shields.io/crates/l/tower-rate-tier.svg)](LICENSE-MIT)
+[![Crates.io](https://img.shields.io/crates/v/tower-rate-tier.svg?v=1)](https://crates.io/crates/tower-rate-tier)
+[![Documentation](https://docs.rs/tower-rate-tier/badge.svg?v=1)](https://docs.rs/tower-rate-tier)
+[![License](https://img.shields.io/crates/l/tower-rate-tier.svg?v=1)](LICENSE-MIT)
 
 Every SaaS API needs rate limiting by user plan (free/pro/enterprise). `tower-rate-tier` eliminates the 200-400 lines of custom middleware you'd otherwise write.
 

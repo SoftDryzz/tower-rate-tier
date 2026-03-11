@@ -40,6 +40,7 @@ pub struct RateTier {
 }
 
 impl RateTier {
+    /// Returns a new [`RateTierBuilder`] for configuring tiers and quotas.
     pub fn builder() -> RateTierBuilder {
         RateTierBuilder::default()
     }

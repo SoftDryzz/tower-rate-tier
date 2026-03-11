@@ -21,6 +21,7 @@ pub struct SystemClock {
 }
 
 impl SystemClock {
+    /// Creates a new `SystemClock` with the current instant as its epoch.
     pub fn new() -> Self {
         Self {
             epoch: tokio::time::Instant::now(),
@@ -63,6 +64,7 @@ pub struct FakeClock {
 }
 
 impl FakeClock {
+    /// Creates a new `FakeClock` starting at time zero.
     pub fn new() -> Self {
         Self {
             nanos: Arc::new(AtomicU64::new(0)),
