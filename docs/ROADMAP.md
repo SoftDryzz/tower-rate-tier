@@ -6,19 +6,21 @@
 
 Core library with in-memory storage and full Tower integration.
 
-- [ ] Core types: `RateTier`, `RateTierBuilder`, `Quota`, `TierIdentity`
-- [ ] GCRA algorithm implementation
-- [ ] `TierLimitLayer` / `TierLimitService` (Tower Layer + Service)
-- [ ] `TierIdentifier` trait + closure adapter (`identifier_fn`)
-- [ ] `tier_cost()` layer for per-endpoint request weighting
-- [ ] `OnMissing` behavior: `UseDefault`, `Allow`, `Deny(StatusCode)`
-- [ ] In-memory storage with `DashMap` + automatic GC of expired keys
-- [ ] Standard rate limit headers (`X-RateLimit-Limit`, `Remaining`, `Reset`, `Retry-After`)
-- [ ] 429 JSON response body
-- [ ] `FakeClock` for deterministic testing
-- [ ] Body-based identification (feature-gated: `buffered-body`)
-- [ ] Examples: `axum_basic`, `axum_jwt`
-- [ ] README with usage guide
+- [x] Core types: `RateTier`, `RateTierBuilder`, `Quota`, `TierIdentity`
+- [x] GCRA algorithm implementation
+- [x] `TierLimitLayer` / `TierLimitService` (Tower Layer + Service)
+- [x] `TierIdentifier` trait + closure adapter (`identifier_fn`)
+- [x] `tier_cost()` layer for per-endpoint request weighting
+- [x] `OnMissing` behavior: `UseDefault`, `Allow`, `Deny(StatusCode)`
+- [x] `OnStorageError` behavior: `Allow` (fail open) / `Deny` (fail closed)
+- [x] `StorageError` type for distinguishing backend failures from rate limits
+- [x] In-memory storage with `DashMap` + automatic GC of expired keys
+- [x] Standard rate limit headers (`X-RateLimit-Limit`, `Remaining`, `Reset`, `Retry-After`)
+- [x] 429 JSON response body
+- [x] `FakeClock` for deterministic testing
+- [x] Body-based identification (feature-gated: `buffered-body`)
+- [x] Examples: `axum_basic`, `axum_jwt`
+- [x] README with usage guide
 - [ ] Published to crates.io
 
 ## v0.2.0 — Distributed & Observability
@@ -27,7 +29,6 @@ Redis storage and monitoring hooks.
 
 - [ ] Redis storage backend (feature-gated: `redis`)
 - [ ] Atomic GCRA via Lua script (race-condition-free)
-- [ ] `OnStorageError` behavior: `Allow` (fail open) / `Deny` (fail closed)
 - [ ] `on_limited` callback for metrics/events
 - [ ] Custom 429 response body builder
 - [ ] Example: `axum_api_key` with Redis tier lookup

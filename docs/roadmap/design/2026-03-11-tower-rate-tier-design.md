@@ -383,18 +383,18 @@ optional = true
 ## 7. Success Criteria
 
 ### v0.1.0 (MVP)
-- [ ] Core: RateTier builder, Quota, GCRA
-- [ ] Tower Layer/Service implementation
-- [ ] Async identifier with closure support
-- [ ] In-memory storage with DashMap + GC
-- [ ] Request cost/weight layer
-- [ ] OnMissing behavior
-- [ ] Standard rate limit headers
-- [ ] 429 response with JSON body
-- [ ] FakeClock for testing
-- [ ] Body access in identifier (feature-gated `buffered-body`)
-- [ ] Examples: axum_basic, axum_jwt
-- [ ] README with usage guide
+- [x] Core: RateTier builder, Quota, GCRA
+- [x] Tower Layer/Service implementation
+- [x] Async identifier with closure support
+- [x] In-memory storage with DashMap + GC
+- [x] Request cost/weight layer
+- [x] OnMissing behavior
+- [x] Standard rate limit headers
+- [x] 429 response with JSON body
+- [x] FakeClock for testing
+- [x] Body access in identifier (feature-gated `buffered-body`)
+- [x] Examples: axum_basic, axum_jwt
+- [x] README with usage guide
 - [ ] Published to crates.io
 
 ### v0.2.0
