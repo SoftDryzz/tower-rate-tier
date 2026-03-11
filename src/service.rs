@@ -55,7 +55,7 @@ where
     fn call(&mut self, req: Request<B>) -> Self::Future {
         let rate_tier = self.rate_tier.clone();
         let identifier = self.identifier.clone();
-        let _on_storage_error = self.on_storage_error;
+        let on_storage_error = self.on_storage_error;
         let mut inner = self.inner.clone();
         // Swap to preserve readiness: the clone gets future calls, self keeps the ready one.
         std::mem::swap(&mut self.inner, &mut inner);
@@ -110,14 +110,20 @@ where
                 .await;
 
             match result {
-                Ok(info) => {
+                Ok(Ok(info)) => {
                     let mut resp = inner.call(req).await?;
                     response::inject_headers(&mut resp, &info);
                     Ok(resp)
                 }
-                Err(limited) => {
+                Ok(Err(limited)) => {
                     Ok(response::rate_limited_response(&limited, &tier_name).map(Into::into))
                 }
+                Err(_storage_err) => match on_storage_error {
+                    OnStorageError::Allow => inner.call(req).await,
+                    OnStorageError::Deny => {
+                        Ok(response::storage_error_response().map(Into::into))
+                    }
+                },
             }
         })
     }

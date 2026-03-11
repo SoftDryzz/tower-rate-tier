@@ -80,9 +80,9 @@ async fn check_basic_allow_and_deny() {
         .clock(clock)
         .build();
 
-    assert!(limiter.check("u1", "free", 1).await.is_ok());
-    assert!(limiter.check("u1", "free", 1).await.is_ok());
-    assert!(limiter.check("u1", "free", 1).await.is_err());
+    assert!(limiter.check("u1", "free", 1).await.unwrap().is_ok());
+    assert!(limiter.check("u1", "free", 1).await.unwrap().is_ok());
+    assert!(limiter.check("u1", "free", 1).await.unwrap().is_err());
 }
 
 #[tokio::test]
@@ -93,7 +93,7 @@ async fn check_unlimited_always_allows() {
         .build();
 
     for _ in 0..1000 {
-        assert!(limiter.check("u1", "enterprise", 1).await.is_ok());
+        assert!(limiter.check("u1", "enterprise", 1).await.unwrap().is_ok());
     }
 }
 
@@ -107,11 +107,11 @@ async fn check_recovery_after_time() {
         .clock(clock.clone())
         .build();
 
-    assert!(limiter.check("u1", "free", 1).await.is_ok());
-    assert!(limiter.check("u1", "free", 1).await.is_err());
+    assert!(limiter.check("u1", "free", 1).await.unwrap().is_ok());
+    assert!(limiter.check("u1", "free", 1).await.unwrap().is_err());
 
     clock.advance(Duration::from_secs(1));
-    assert!(limiter.check("u1", "free", 1).await.is_ok());
+    assert!(limiter.check("u1", "free", 1).await.unwrap().is_ok());
 }
 
 #[tokio::test]
@@ -126,14 +126,14 @@ async fn check_different_tiers_different_limits() {
         .build();
 
     // Free user exhausts after 1
-    assert!(limiter.check("u1", "free", 1).await.is_ok());
-    assert!(limiter.check("u1", "free", 1).await.is_err());
+    assert!(limiter.check("u1", "free", 1).await.unwrap().is_ok());
+    assert!(limiter.check("u1", "free", 1).await.unwrap().is_err());
 
     // Pro user still has quota
     for _ in 0..5 {
-        assert!(limiter.check("u2", "pro", 1).await.is_ok());
+        assert!(limiter.check("u2", "pro", 1).await.unwrap().is_ok());
     }
-    assert!(limiter.check("u2", "pro", 1).await.is_err());
+    assert!(limiter.check("u2", "pro", 1).await.unwrap().is_err());
 }
 
 #[tokio::test]
@@ -165,9 +165,9 @@ async fn check_with_cost() {
         .clock(clock)
         .build();
 
-    let info = limiter.check("u1", "free", 7).await.unwrap();
+    let info = limiter.check("u1", "free", 7).await.unwrap().unwrap();
     assert_eq!(info.remaining, 3);
 
-    assert!(limiter.check("u1", "free", 5).await.is_err());
-    assert!(limiter.check("u1", "free", 3).await.is_ok());
+    assert!(limiter.check("u1", "free", 5).await.unwrap().is_err());
+    assert!(limiter.check("u1", "free", 3).await.unwrap().is_ok());
 }
