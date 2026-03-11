@@ -1,0 +1,29 @@
+# Build artifacts
+/target/
+debug/
+*.pdb
+
+# Cargo
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Project config
+.claude/
+.claude.*
+CLAUDE.md
+**/CLAUDE.md
+
+# Environment
+.env
+.env.*
