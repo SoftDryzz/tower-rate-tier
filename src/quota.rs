@@ -85,12 +85,21 @@ impl Quota {
     }
 
     /// The emission interval in nanoseconds (for GCRA calculations).
+    ///
+    /// Saturates to `u64::MAX` if the interval exceeds ~584 years.
     pub fn emission_interval_nanos(&self) -> Nanos {
-        self.replenish_interval().as_nanos() as Nanos
+        let nanos_u128 = self.replenish_interval().as_nanos();
+        if nanos_u128 > u64::MAX as u128 {
+            u64::MAX
+        } else {
+            nanos_u128 as Nanos
+        }
     }
 
     /// The burst offset in nanoseconds: emission_interval * max_burst.
+    ///
+    /// Uses saturating multiplication to prevent overflow on large quotas.
     pub fn burst_offset_nanos(&self) -> Nanos {
-        self.emission_interval_nanos() * self.max_burst as Nanos
+        self.emission_interval_nanos().saturating_mul(self.max_burst as Nanos)
     }
 }
