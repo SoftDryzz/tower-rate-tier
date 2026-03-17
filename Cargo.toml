@@ -2,6 +2,7 @@
 name = "tower-rate-tier"
 version = "0.1.1"
 edition = "2021"
+rust-version = "1.75"
 license = "MIT OR Apache-2.0"
 description = "Tier-based rate limiting middleware for Tower"
 repository = "https://github.com/SoftDryzz/tower-rate-tier"
