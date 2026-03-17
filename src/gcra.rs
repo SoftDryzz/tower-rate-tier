@@ -32,7 +32,8 @@ pub struct RateLimited {
 /// * `now` - Current time in nanoseconds.
 /// * `emission_interval` - Time between allowed cells (window / max_burst).
 /// * `burst_offset` - Maximum burst window (emission_interval * max_burst).
-/// * `cost` - Number of cells this request consumes.
+/// * `cost` - Number of cells this request consumes. A cost of `0` means the
+///   request is free (no quota consumed) and is always allowed.
 ///
 /// # Returns
 ///

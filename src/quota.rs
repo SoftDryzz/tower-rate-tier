@@ -51,6 +51,40 @@ impl Quota {
         }
     }
 
+    /// Create a quota allowing `count` requests per day (24 hours).
+    pub fn per_day(count: u32) -> Self {
+        assert!(count > 0, "quota count must be greater than 0");
+        Self {
+            max_burst: count,
+            window: Duration::from_secs(86_400),
+        }
+    }
+
+    /// Create a quota with a custom window duration.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use tower_rate_tier::Quota;
+    ///
+    /// // 50 requests per 15 minutes
+    /// let quota = Quota::with_window(50, Duration::from_secs(900));
+    /// assert_eq!(quota.max_burst(), 50);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if `count` is 0 or `window` is zero.
+    pub fn with_window(count: u32, window: Duration) -> Self {
+        assert!(count > 0, "quota count must be greater than 0");
+        assert!(!window.is_zero(), "window must be non-zero");
+        Self {
+            max_burst: count,
+            window,
+        }
+    }
+
     /// Create an unlimited quota that bypasses rate limiting entirely.
     pub fn unlimited() -> Self {
         Self {
