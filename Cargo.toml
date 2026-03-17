@@ -21,13 +21,13 @@ pin-project-lite = "0.2"
 async-trait = "0.1"
 http-body-util = { version = "0.1", optional = true }
 redis = { version = "0.27", features = ["tokio-comp"], optional = true }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 
 [dev-dependencies]
 axum = "0.8"
 tokio = { version = "1", features = ["full", "test-util"] }
 hyper = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [features]
 default = []
