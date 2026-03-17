@@ -6,10 +6,10 @@ use std::task::{Context, Poll};
 use http::{Request, Response};
 use tower_service::Service;
 
+use crate::check::{self, CheckOutcome};
 use crate::cost::TierCost;
 use crate::identifier::TierIdentifier;
 use crate::layer::{OnLimitedFn, RateLimitedResponseFn};
-use crate::on_missing::OnMissing;
 use crate::on_storage_error::OnStorageError;
 use crate::response;
 use crate::tier::RateTier;
@@ -68,44 +68,22 @@ where
         std::mem::swap(&mut self.inner, &mut inner);
 
         Box::pin(async move {
-            let headers = req.headers();
-            let identity = identifier.identify(headers).await;
+            let identity = identifier.identify(req.headers()).await;
 
-            let (user_id, tier_name) = match identity {
-                Some(id) => (id.user_id, id.tier),
-                None => match rate_tier.on_missing() {
-                    OnMissing::Allow => return inner.call(req).await,
-                    OnMissing::Deny(status) => {
-                        return Ok(response::deny_response(status).map(Into::into));
-                    }
-                    OnMissing::UseDefault => {
-                        if let Some(default) = rate_tier.default_tier() {
-                            ("__anonymous__".to_string(), default.to_string())
-                        } else {
-                            return inner.call(req).await;
-                        }
-                    }
-                },
+            let (user_id, tier_name) = match check::resolve_identity(identity, &rate_tier) {
+                Ok(pair) => pair,
+                Err(CheckOutcome::PassThrough) => return inner.call(req).await,
+                Err(CheckOutcome::Deny(resp)) => return Ok(resp.map(Into::into)),
+                Err(CheckOutcome::Allow(_)) => unreachable!(),
             };
 
-            // Look up the quota for this tier
-            let quota = match rate_tier.get_quota(&tier_name) {
-                Some(q) => q,
-                None => {
-                    // Unknown tier — treat as unidentified
-                    return inner.call(req).await;
-                }
+            let quota = match check::resolve_quota(&rate_tier, &tier_name) {
+                Ok(q) => q,
+                Err(CheckOutcome::PassThrough) => return inner.call(req).await,
+                Err(_) => unreachable!(),
             };
 
-            // Unlimited tiers bypass rate limiting entirely
-            if quota.is_unlimited() {
-                return inner.call(req).await;
-            }
-
-            // Read cost from extensions (set by tier_cost layer), default 1
             let cost = req.extensions().get::<TierCost>().map(|c| c.0).unwrap_or(1);
-
-            // Perform the rate limit check
             let now = rate_tier.clock().now();
             let storage_key = format!("{}:{}", user_id, tier_name);
             let result = rate_tier
@@ -115,27 +93,22 @@ where
 
             let unix_offset = rate_tier.clock().unix_offset_nanos();
 
-            match result {
-                Ok(Ok(info)) => {
+            match check::process_result(
+                result,
+                &user_id,
+                &tier_name,
+                on_storage_error,
+                &on_limited,
+                &rate_limited_response_fn,
+                unix_offset,
+            ) {
+                CheckOutcome::Allow(info) => {
                     let mut resp = inner.call(req).await?;
                     response::inject_headers(&mut resp, &info, unix_offset);
                     Ok(resp)
                 }
-                Ok(Err(limited)) => {
-                    if let Some(ref cb) = on_limited {
-                        cb(&user_id, &tier_name, &limited);
-                    }
-                    let resp = if let Some(ref builder) = rate_limited_response_fn {
-                        builder(&user_id, &tier_name, &limited)
-                    } else {
-                        response::rate_limited_response(&limited, &tier_name, unix_offset)
-                    };
-                    Ok(resp.map(Into::into))
-                }
-                Err(_storage_err) => match on_storage_error {
-                    OnStorageError::Allow => inner.call(req).await,
-                    OnStorageError::Deny => Ok(response::storage_error_response().map(Into::into)),
-                },
+                CheckOutcome::Deny(resp) => Ok(resp.map(Into::into)),
+                CheckOutcome::PassThrough => inner.call(req).await,
             }
         })
     }
