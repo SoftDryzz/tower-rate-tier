@@ -137,14 +137,19 @@ async fn check_different_tiers_different_limits() {
 }
 
 #[tokio::test]
-#[should_panic(expected = "unknown tier")]
-async fn check_unknown_tier_panics() {
+async fn check_unknown_tier_returns_error() {
     let limiter = RateTier::builder()
         .tier("free", Quota::per_hour(100))
         .clock(FakeClock::new())
         .build();
 
-    let _ = limiter.check("u1", "nonexistent", 1).await;
+    let result = limiter.check("u1", "nonexistent", 1).await;
+    match result {
+        Err(tower_rate_tier::CheckError::UnknownTier(name)) => {
+            assert_eq!(name, "nonexistent");
+        }
+        other => panic!("expected CheckError::UnknownTier, got {:?}", other),
+    }
 }
 
 #[tokio::test]
