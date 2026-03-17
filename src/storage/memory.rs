@@ -1,9 +1,8 @@
-use async_trait::async_trait;
 use dashmap::DashMap;
 
-use crate::gcra::{check_gcra, RateLimitInfo, RateLimited};
+use crate::gcra::check_gcra;
 use crate::quota::{Nanos, Quota};
-use crate::storage::{Storage, StorageError};
+use crate::storage::{Storage, StorageFuture};
 
 /// In-memory rate limit storage backed by `DashMap`.
 ///
@@ -45,15 +44,14 @@ impl Default for MemoryStorage {
     }
 }
 
-#[async_trait]
 impl Storage for MemoryStorage {
-    async fn check_and_update(
+    fn check_and_update(
         &self,
         key: &str,
         quota: &Quota,
         cost: u32,
         now: Nanos,
-    ) -> Result<Result<RateLimitInfo, RateLimited>, StorageError> {
+    ) -> StorageFuture<'_> {
         let ei = quota.emission_interval_nanos();
         let bo = quota.burst_offset_nanos();
 
@@ -62,12 +60,14 @@ impl Storage for MemoryStorage {
         // Some(now) and None identically.
         let current_tat = self.state.get(key).map(|e| *e.value());
 
-        Ok(match check_gcra(current_tat, now, ei, bo, cost) {
+        let result = match check_gcra(current_tat, now, ei, bo, cost) {
             Ok((new_tat, info)) => {
                 self.state.insert(key.to_owned(), new_tat);
-                Ok(info)
+                Ok(Ok(info))
             }
-            Err(limited) => Err(limited),
-        })
+            Err(limited) => Ok(Err(limited)),
+        };
+
+        Box::pin(std::future::ready(result))
     }
 }

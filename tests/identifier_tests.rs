@@ -1,14 +1,19 @@
+use std::future::Future;
+use std::pin::Pin;
+
 use http::HeaderMap;
 use tower_rate_tier::identifier::TierIdentity;
 use tower_rate_tier::TierIdentifier;
 
 struct MockIdentifier;
 
-#[async_trait::async_trait]
 impl TierIdentifier for MockIdentifier {
-    async fn identify(&self, headers: &HeaderMap) -> Option<TierIdentity> {
-        let key = headers.get("X-Api-Key")?.to_str().ok()?;
-        Some(TierIdentity::new(key, "free"))
+    fn identify(&self, headers: &HeaderMap) -> Pin<Box<dyn Future<Output = Option<TierIdentity>> + Send + '_>> {
+        let result = headers
+            .get("X-Api-Key")
+            .and_then(|v| v.to_str().ok())
+            .map(|key| TierIdentity::new(key, "free"));
+        Box::pin(std::future::ready(result))
     }
 }
 

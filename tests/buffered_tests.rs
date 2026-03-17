@@ -1,9 +1,9 @@
 #![cfg(feature = "buffered-body")]
 
+use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use async_trait::async_trait;
 use bytes::Bytes;
 use http::{HeaderMap, Request, Response, StatusCode};
 use http_body::Frame;
@@ -37,25 +37,27 @@ impl Service<Request<Full<Bytes>>> for EchoService {
 /// Identifier that extracts user_id from JSON body.
 struct BodyJsonIdentifier;
 
-#[async_trait]
 impl TierIdentifier for BodyJsonIdentifier {
-    async fn identify(&self, _headers: &HeaderMap) -> Option<TierIdentity> {
-        None // Cannot identify from headers alone
+    fn identify(&self, _headers: &HeaderMap) -> Pin<Box<dyn Future<Output = Option<TierIdentity>> + Send + '_>> {
+        Box::pin(std::future::ready(None))
     }
 
-    async fn identify_with_body(
+    fn identify_with_body(
         &self,
         _headers: &HeaderMap,
         body: &Bytes,
-    ) -> Option<TierIdentity> {
-        let body_str = std::str::from_utf8(body).ok()?;
-        let parsed: serde_json::Value = serde_json::from_str(body_str).ok()?;
-        let user_id = parsed.get("user_id")?.as_str()?;
-        let tier = parsed
-            .get("tier")
-            .and_then(|v| v.as_str())
-            .unwrap_or("free");
-        Some(TierIdentity::new(user_id, tier))
+    ) -> Pin<Box<dyn Future<Output = Option<TierIdentity>> + Send + '_>> {
+        let result = (|| {
+            let body_str = std::str::from_utf8(body).ok()?;
+            let parsed: serde_json::Value = serde_json::from_str(body_str).ok()?;
+            let user_id = parsed.get("user_id")?.as_str()?;
+            let tier = parsed
+                .get("tier")
+                .and_then(|v| v.as_str())
+                .unwrap_or("free");
+            Some(TierIdentity::new(user_id, tier))
+        })();
+        Box::pin(std::future::ready(result))
     }
 }
 
