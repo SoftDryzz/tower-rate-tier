@@ -25,7 +25,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.75"
-      - run: cargo check --all-features
+      - run: cargo check
+      - run: cargo check --features buffered-body
 
   clippy:
     runs-on: ubuntu-latest
