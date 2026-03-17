@@ -12,6 +12,7 @@ use tower_service::Service;
 
 use crate::cost::TierCost;
 use crate::identifier::TierIdentifier;
+use crate::layer::{OnLimitedFn, RateLimitedResponseFn};
 use crate::on_missing::OnMissing;
 use crate::on_storage_error::OnStorageError;
 use crate::response;
@@ -35,6 +36,8 @@ pub struct BufferedTierLimitLayer {
     pub(crate) rate_tier: Arc<RateTier>,
     pub(crate) identifier: Arc<dyn TierIdentifier>,
     pub(crate) on_storage_error: OnStorageError,
+    pub(crate) on_limited: Option<Arc<OnLimitedFn>>,
+    pub(crate) rate_limited_response: Option<Arc<RateLimitedResponseFn>>,
     pub(crate) max_body_size: usize,
 }
 
@@ -58,6 +61,8 @@ impl<S> Layer<S> for BufferedTierLimitLayer {
             rate_tier: self.rate_tier.clone(),
             identifier: self.identifier.clone(),
             on_storage_error: self.on_storage_error,
+            on_limited: self.on_limited.clone(),
+            rate_limited_response: self.rate_limited_response.clone(),
             max_body_size: self.max_body_size,
         }
     }
@@ -71,6 +76,8 @@ pub struct BufferedTierLimitService<S> {
     rate_tier: Arc<RateTier>,
     identifier: Arc<dyn TierIdentifier>,
     on_storage_error: OnStorageError,
+    on_limited: Option<Arc<OnLimitedFn>>,
+    rate_limited_response: Option<Arc<RateLimitedResponseFn>>,
     max_body_size: usize,
 }
 
@@ -81,6 +88,8 @@ impl<S: Clone> Clone for BufferedTierLimitService<S> {
             rate_tier: self.rate_tier.clone(),
             identifier: self.identifier.clone(),
             on_storage_error: self.on_storage_error,
+            on_limited: self.on_limited.clone(),
+            rate_limited_response: self.rate_limited_response.clone(),
             max_body_size: self.max_body_size,
         }
     }
@@ -108,6 +117,8 @@ where
         let rate_tier = self.rate_tier.clone();
         let identifier = self.identifier.clone();
         let on_storage_error = self.on_storage_error;
+        let on_limited = self.on_limited.clone();
+        let rate_limited_response_fn = self.rate_limited_response.clone();
         let max_body_size = self.max_body_size;
         let mut inner = self.inner.clone();
         std::mem::swap(&mut self.inner, &mut inner);
@@ -172,11 +183,7 @@ where
             }
 
             // Read cost from extensions
-            let cost = parts
-                .extensions
-                .get::<TierCost>()
-                .map(|c| c.0)
-                .unwrap_or(1);
+            let cost = parts.extensions.get::<TierCost>().map(|c| c.0).unwrap_or(1);
 
             // Rate limit check
             let now = rate_tier.clock().now();
@@ -196,16 +203,22 @@ where
                     Ok(resp)
                 }
                 Ok(Err(limited)) => {
-                    Ok(response::rate_limited_response(&limited, &tier_name, unix_offset).map(Into::into))
+                    if let Some(ref cb) = on_limited {
+                        cb(&user_id, &tier_name, &limited);
+                    }
+                    let resp = if let Some(ref builder) = rate_limited_response_fn {
+                        builder(&user_id, &tier_name, &limited)
+                    } else {
+                        response::rate_limited_response(&limited, &tier_name, unix_offset)
+                    };
+                    Ok(resp.map(Into::into))
                 }
                 Err(_storage_err) => match on_storage_error {
                     OnStorageError::Allow => {
                         let req = Request::from_parts(parts, Full::new(body_bytes));
                         inner.call(req).await
                     }
-                    OnStorageError::Deny => {
-                        Ok(response::storage_error_response().map(Into::into))
-                    }
+                    OnStorageError::Deny => Ok(response::storage_error_response().map(Into::into)),
                 },
             }
         })

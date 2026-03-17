@@ -8,6 +8,7 @@ use tower_service::Service;
 
 use crate::cost::TierCost;
 use crate::identifier::TierIdentifier;
+use crate::layer::{OnLimitedFn, RateLimitedResponseFn};
 use crate::on_missing::OnMissing;
 use crate::on_storage_error::OnStorageError;
 use crate::response;
@@ -23,6 +24,8 @@ pub struct TierLimitService<S> {
     pub(crate) rate_tier: Arc<RateTier>,
     pub(crate) identifier: Arc<dyn TierIdentifier>,
     pub(crate) on_storage_error: OnStorageError,
+    pub(crate) on_limited: Option<Arc<OnLimitedFn>>,
+    pub(crate) rate_limited_response: Option<Arc<RateLimitedResponseFn>>,
 }
 
 impl<S: Clone> Clone for TierLimitService<S> {
@@ -32,6 +35,8 @@ impl<S: Clone> Clone for TierLimitService<S> {
             rate_tier: self.rate_tier.clone(),
             identifier: self.identifier.clone(),
             on_storage_error: self.on_storage_error,
+            on_limited: self.on_limited.clone(),
+            rate_limited_response: self.rate_limited_response.clone(),
         }
     }
 }
@@ -56,6 +61,8 @@ where
         let rate_tier = self.rate_tier.clone();
         let identifier = self.identifier.clone();
         let on_storage_error = self.on_storage_error;
+        let on_limited = self.on_limited.clone();
+        let rate_limited_response_fn = self.rate_limited_response.clone();
         let mut inner = self.inner.clone();
         // Swap to preserve readiness: the clone gets future calls, self keeps the ready one.
         std::mem::swap(&mut self.inner, &mut inner);
@@ -96,11 +103,7 @@ where
             }
 
             // Read cost from extensions (set by tier_cost layer), default 1
-            let cost = req
-                .extensions()
-                .get::<TierCost>()
-                .map(|c| c.0)
-                .unwrap_or(1);
+            let cost = req.extensions().get::<TierCost>().map(|c| c.0).unwrap_or(1);
 
             // Perform the rate limit check
             let now = rate_tier.clock().now();
@@ -119,13 +122,19 @@ where
                     Ok(resp)
                 }
                 Ok(Err(limited)) => {
-                    Ok(response::rate_limited_response(&limited, &tier_name, unix_offset).map(Into::into))
+                    if let Some(ref cb) = on_limited {
+                        cb(&user_id, &tier_name, &limited);
+                    }
+                    let resp = if let Some(ref builder) = rate_limited_response_fn {
+                        builder(&user_id, &tier_name, &limited)
+                    } else {
+                        response::rate_limited_response(&limited, &tier_name, unix_offset)
+                    };
+                    Ok(resp.map(Into::into))
                 }
                 Err(_storage_err) => match on_storage_error {
                     OnStorageError::Allow => inner.call(req).await,
-                    OnStorageError::Deny => {
-                        Ok(response::storage_error_response().map(Into::into))
-                    }
+                    OnStorageError::Deny => Ok(response::storage_error_response().map(Into::into)),
                 },
             }
         })

@@ -9,14 +9,8 @@ use crate::gcra::{RateLimitInfo, RateLimited};
 /// for the `X-RateLimit-Reset` header.
 pub fn inject_headers<B>(response: &mut Response<B>, info: &RateLimitInfo, unix_offset_nanos: u64) {
     let headers = response.headers_mut();
-    headers.insert(
-        "X-RateLimit-Limit",
-        HeaderValue::from(info.limit),
-    );
-    headers.insert(
-        "X-RateLimit-Remaining",
-        HeaderValue::from(info.remaining),
-    );
+    headers.insert("X-RateLimit-Limit", HeaderValue::from(info.limit));
+    headers.insert("X-RateLimit-Remaining", HeaderValue::from(info.remaining));
     headers.insert(
         "X-RateLimit-Reset",
         reset_header_value(info.reset_at, unix_offset_nanos),
@@ -27,7 +21,11 @@ pub fn inject_headers<B>(response: &mut Response<B>, info: &RateLimitInfo, unix_
 ///
 /// `unix_offset_nanos` is added to `reset_at` to produce a Unix timestamp
 /// for the `X-RateLimit-Reset` header.
-pub fn rate_limited_response(limited: &RateLimited, tier: &str, unix_offset_nanos: u64) -> Response<String> {
+pub fn rate_limited_response(
+    limited: &RateLimited,
+    tier: &str,
+    unix_offset_nanos: u64,
+) -> Response<String> {
     let retry_after_secs = limited.retry_after.as_secs();
 
     let escaped_tier = escape_json_string(tier);
@@ -42,7 +40,10 @@ pub fn rate_limited_response(limited: &RateLimited, tier: &str, unix_offset_nano
         .header("Retry-After", retry_after_secs)
         .header("X-RateLimit-Limit", limited.limit)
         .header("X-RateLimit-Remaining", 0u32)
-        .header("X-RateLimit-Reset", reset_header_value(limited.reset_at, unix_offset_nanos))
+        .header(
+            "X-RateLimit-Reset",
+            reset_header_value(limited.reset_at, unix_offset_nanos),
+        )
         .body(body)
         .unwrap();
 

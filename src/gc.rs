@@ -15,11 +15,7 @@ pub struct GcHandle {
 
 impl GcHandle {
     /// Spawn a background task that periodically cleans expired entries.
-    pub fn spawn(
-        storage: Arc<MemoryStorage>,
-        clock: Arc<dyn Clock>,
-        interval: Duration,
-    ) -> Self {
+    pub fn spawn(storage: Arc<MemoryStorage>, clock: Arc<dyn Clock>, interval: Duration) -> Self {
         let handle = tokio::spawn(async move {
             let mut tick = tokio::time::interval(interval);
             loop {

@@ -134,6 +134,7 @@ impl Quota {
     ///
     /// Uses saturating multiplication to prevent overflow on large quotas.
     pub fn burst_offset_nanos(&self) -> Nanos {
-        self.emission_interval_nanos().saturating_mul(self.max_burst as Nanos)
+        self.emission_interval_nanos()
+            .saturating_mul(self.max_burst as Nanos)
     }
 }

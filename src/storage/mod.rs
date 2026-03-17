@@ -9,8 +9,9 @@ use crate::gcra::{RateLimitInfo, RateLimited};
 use crate::quota::{Nanos, Quota};
 
 /// The future type returned by [`Storage::check_and_update`].
-pub type StorageFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<Result<RateLimitInfo, RateLimited>, StorageError>> + Send + 'a>>;
+pub type StorageFuture<'a> = Pin<
+    Box<dyn Future<Output = Result<Result<RateLimitInfo, RateLimited>, StorageError>> + Send + 'a>,
+>;
 
 /// Error returned when the storage backend fails (e.g., Redis connection lost).
 #[derive(Debug)]

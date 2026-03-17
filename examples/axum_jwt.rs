@@ -25,7 +25,10 @@ use tower_rate_tier::{Quota, RateTier, TierIdentifier, TierIdentity, TierLimitLa
 struct JwtIdentifier;
 
 impl TierIdentifier for JwtIdentifier {
-    fn identify(&self, headers: &HeaderMap) -> Pin<Box<dyn Future<Output = Option<TierIdentity>> + Send + '_>> {
+    fn identify(
+        &self,
+        headers: &HeaderMap,
+    ) -> Pin<Box<dyn Future<Output = Option<TierIdentity>> + Send + '_>> {
         let result = (|| {
             let auth = headers.get("authorization")?.to_str().ok()?;
             let token = auth.strip_prefix("Bearer ")?;
@@ -41,7 +44,10 @@ impl TierIdentifier for JwtIdentifier {
             let claims: serde_json::Value = serde_json::from_slice(&payload).ok()?;
 
             let user_id = claims.get("user_id")?.as_str()?;
-            let tier = claims.get("tier").and_then(|v| v.as_str()).unwrap_or("free");
+            let tier = claims
+                .get("tier")
+                .and_then(|v| v.as_str())
+                .unwrap_or("free");
 
             Some(TierIdentity::new(user_id, tier))
         })();
@@ -60,9 +66,7 @@ async fn main() {
 
     let layer = TierLimitLayer::new(rate_tier).identifier(JwtIdentifier);
 
-    let app = Router::new()
-        .route("/api/data", get(get_data))
-        .layer(layer);
+    let app = Router::new().route("/api/data", get(get_data)).layer(layer);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     println!("Listening on http://localhost:3000");

@@ -29,7 +29,10 @@ impl TierIdentity {
 /// For simple sync cases, use [`identifier_fn`](crate::TierLimitLayer::identifier_fn).
 pub trait TierIdentifier: Send + Sync + 'static {
     /// Identify the user from request headers.
-    fn identify(&self, headers: &HeaderMap) -> Pin<Box<dyn Future<Output = Option<TierIdentity>> + Send + '_>>;
+    fn identify(
+        &self,
+        headers: &HeaderMap,
+    ) -> Pin<Box<dyn Future<Output = Option<TierIdentity>> + Send + '_>>;
 
     /// Identify the user from request headers and body.
     ///
@@ -52,7 +55,10 @@ impl<F> TierIdentifier for ClosureIdentifier<F>
 where
     F: Fn(&HeaderMap) -> Option<TierIdentity> + Send + Sync + 'static,
 {
-    fn identify(&self, headers: &HeaderMap) -> Pin<Box<dyn Future<Output = Option<TierIdentity>> + Send + '_>> {
+    fn identify(
+        &self,
+        headers: &HeaderMap,
+    ) -> Pin<Box<dyn Future<Output = Option<TierIdentity>> + Send + '_>> {
         Box::pin(std::future::ready((self.0)(headers)))
     }
 }
