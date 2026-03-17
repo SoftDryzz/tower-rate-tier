@@ -98,9 +98,13 @@ impl FakeClock {
     }
 
     /// Advance the clock by the given duration.
+    ///
+    /// Saturates at `u64::MAX` if the total would overflow.
     pub fn advance(&self, duration: Duration) {
-        self.nanos
-            .fetch_add(duration.as_nanos() as u64, Ordering::SeqCst);
+        let delta = duration.as_nanos().min(u64::MAX as u128) as u64;
+        let _ = self.nanos.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+            Some(current.saturating_add(delta))
+        });
     }
 
     /// Set the clock to an absolute nanosecond value.
