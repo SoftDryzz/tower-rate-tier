@@ -1,4 +1,6 @@
-use async_trait::async_trait;
+use std::future::Future;
+use std::pin::Pin;
+
 use bytes::Bytes;
 use http::HeaderMap;
 
@@ -25,21 +27,20 @@ impl TierIdentity {
 ///
 /// Implement this trait for async lookups (e.g., database, Redis).
 /// For simple sync cases, use [`identifier_fn`](crate::TierLimitLayer::identifier_fn).
-#[async_trait]
 pub trait TierIdentifier: Send + Sync + 'static {
     /// Identify the user from request headers.
-    async fn identify(&self, headers: &HeaderMap) -> Option<TierIdentity>;
+    fn identify(&self, headers: &HeaderMap) -> Pin<Box<dyn Future<Output = Option<TierIdentity>> + Send + '_>>;
 
     /// Identify the user from request headers and body.
     ///
     /// Only called when `buffer_body(true)` is enabled.
     /// Default implementation delegates to [`identify`](TierIdentifier::identify).
-    async fn identify_with_body(
+    fn identify_with_body(
         &self,
         headers: &HeaderMap,
         _body: &Bytes,
-    ) -> Option<TierIdentity> {
-        self.identify(headers).await
+    ) -> Pin<Box<dyn Future<Output = Option<TierIdentity>> + Send + '_>> {
+        self.identify(headers)
     }
 }
 
@@ -47,12 +48,11 @@ pub trait TierIdentifier: Send + Sync + 'static {
 #[allow(dead_code)]
 pub(crate) struct ClosureIdentifier<F>(pub(crate) F);
 
-#[async_trait]
 impl<F> TierIdentifier for ClosureIdentifier<F>
 where
     F: Fn(&HeaderMap) -> Option<TierIdentity> + Send + Sync + 'static,
 {
-    async fn identify(&self, headers: &HeaderMap) -> Option<TierIdentity> {
-        (self.0)(headers)
+    fn identify(&self, headers: &HeaderMap) -> Pin<Box<dyn Future<Output = Option<TierIdentity>> + Send + '_>> {
+        Box::pin(std::future::ready((self.0)(headers)))
     }
 }

@@ -2,11 +2,15 @@
 pub mod memory;
 
 use std::fmt;
-
-use async_trait::async_trait;
+use std::future::Future;
+use std::pin::Pin;
 
 use crate::gcra::{RateLimitInfo, RateLimited};
 use crate::quota::{Nanos, Quota};
+
+/// The future type returned by [`Storage::check_and_update`].
+pub type StorageFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Result<RateLimitInfo, RateLimited>, StorageError>> + Send + 'a>>;
 
 /// Error returned when the storage backend fails (e.g., Redis connection lost).
 #[derive(Debug)]
@@ -30,18 +34,17 @@ impl std::error::Error for StorageError {
 ///
 /// The outer `Result` represents storage-level errors (e.g., Redis down).
 /// The inner `Result` represents the GCRA decision (allowed vs rate limited).
-#[async_trait]
 pub trait Storage: Send + Sync + 'static {
     /// Check rate limit and update state atomically.
     ///
     /// - `Ok(Ok(info))` — request allowed
     /// - `Ok(Err(limited))` — request rate limited
     /// - `Err(StorageError)` — storage backend failure
-    async fn check_and_update(
+    fn check_and_update(
         &self,
         key: &str,
         quota: &Quota,
         cost: u32,
         now: Nanos,
-    ) -> Result<Result<RateLimitInfo, RateLimited>, StorageError>;
+    ) -> StorageFuture<'_>;
 }

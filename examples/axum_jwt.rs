@@ -10,7 +10,9 @@
 //!   curl -H "Authorization: Bearer header.eyJ1c2VyX2lkIjoiYWxpY2UiLCJ0aWVyIjoicHJvIn0.sig" \
 //!        http://localhost:3000/api/data
 
-use async_trait::async_trait;
+use std::future::Future;
+use std::pin::Pin;
+
 use axum::{routing::get, Router};
 use http::HeaderMap;
 use tower_rate_tier::{Quota, RateTier, TierIdentifier, TierIdentity, TierLimitLayer};
@@ -21,26 +23,28 @@ use tower_rate_tier::{Quota, RateTier, TierIdentifier, TierIdentity, TierLimitLa
 /// the JWT signature and expiration.
 struct JwtIdentifier;
 
-#[async_trait]
 impl TierIdentifier for JwtIdentifier {
-    async fn identify(&self, headers: &HeaderMap) -> Option<TierIdentity> {
-        let auth = headers.get("authorization")?.to_str().ok()?;
-        let token = auth.strip_prefix("Bearer ")?;
+    fn identify(&self, headers: &HeaderMap) -> Pin<Box<dyn Future<Output = Option<TierIdentity>> + Send + '_>> {
+        let result = (|| {
+            let auth = headers.get("authorization")?.to_str().ok()?;
+            let token = auth.strip_prefix("Bearer ")?;
 
-        // JWT format: header.payload.signature
-        let parts: Vec<&str> = token.split('.').collect();
-        if parts.len() != 3 {
-            return None;
-        }
+            // JWT format: header.payload.signature
+            let parts: Vec<&str> = token.split('.').collect();
+            if parts.len() != 3 {
+                return None;
+            }
 
-        // Decode the payload (base64url → JSON)
-        let payload = base64_decode(parts[1])?;
-        let claims: serde_json::Value = serde_json::from_slice(&payload).ok()?;
+            // Decode the payload (base64url → JSON)
+            let payload = base64_decode(parts[1])?;
+            let claims: serde_json::Value = serde_json::from_slice(&payload).ok()?;
 
-        let user_id = claims.get("user_id")?.as_str()?;
-        let tier = claims.get("tier").and_then(|v| v.as_str()).unwrap_or("free");
+            let user_id = claims.get("user_id")?.as_str()?;
+            let tier = claims.get("tier").and_then(|v| v.as_str()).unwrap_or("free");
 
-        Some(TierIdentity::new(user_id, tier))
+            Some(TierIdentity::new(user_id, tier))
+        })();
+        Box::pin(std::future::ready(result))
     }
 }
 

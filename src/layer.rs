@@ -39,10 +39,9 @@ pub struct TierLimitLayer {
 /// Default identifier that returns `None` for all requests.
 struct NoopIdentifier;
 
-#[async_trait::async_trait]
 impl TierIdentifier for NoopIdentifier {
-    async fn identify(&self, _headers: &HeaderMap) -> Option<TierIdentity> {
-        None
+    fn identify(&self, _headers: &HeaderMap) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<TierIdentity>> + Send + '_>> {
+        Box::pin(std::future::ready(None))
     }
 }
 
