@@ -57,12 +57,14 @@ impl Storage for MemoryStorage {
         let ei = quota.emission_interval_nanos();
         let bo = quota.burst_offset_nanos();
 
-        let mut entry = self.state.entry(key.to_owned()).or_insert(now);
-        let current_tat = *entry.value();
+        // Explicitly distinguish first request (None) from subsequent (Some).
+        // This avoids relying on the coincidence that check_gcra treats
+        // Some(now) and None identically.
+        let current_tat = self.state.get(key).map(|e| *e.value());
 
-        Ok(match check_gcra(Some(current_tat), now, ei, bo, cost) {
+        Ok(match check_gcra(current_tat, now, ei, bo, cost) {
             Ok((new_tat, info)) => {
-                *entry.value_mut() = new_tat;
+                self.state.insert(key.to_owned(), new_tat);
                 Ok(info)
             }
             Err(limited) => Err(limited),
