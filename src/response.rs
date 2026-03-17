@@ -30,9 +30,10 @@ pub fn inject_headers<B>(response: &mut Response<B>, info: &RateLimitInfo, unix_
 pub fn rate_limited_response(limited: &RateLimited, tier: &str, unix_offset_nanos: u64) -> Response<String> {
     let retry_after_secs = limited.retry_after.as_secs();
 
+    let escaped_tier = escape_json_string(tier);
     let body = format!(
         r#"{{"error":"rate limit exceeded","tier":"{}","retry_after":{}}}"#,
-        tier, retry_after_secs
+        escaped_tier, retry_after_secs
     );
 
     let mut response = Response::builder()
@@ -95,4 +96,22 @@ pub fn bad_request_response() -> Response<String> {
 
 fn canonical_reason(status: StatusCode) -> &'static str {
     status.canonical_reason().unwrap_or("request denied")
+}
+
+/// Escape a string for safe embedding in a JSON string value.
+///
+/// Handles `"`, `\`, and control characters per RFC 8259.
+fn escape_json_string(s: &str) -> String {
+    let mut escaped = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            c if c.is_control() => {
+                escaped.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => escaped.push(c),
+        }
+    }
+    escaped
 }
