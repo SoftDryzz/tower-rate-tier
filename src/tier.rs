@@ -1,15 +1,51 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::clock::{Clock, SystemClock};
 use crate::gc::GcHandle;
 use crate::gcra::{RateLimitInfo, RateLimited};
-use crate::storage::StorageError;
 use crate::on_missing::OnMissing;
 use crate::quota::Quota;
 use crate::storage::memory::MemoryStorage;
-use crate::storage::Storage;
+use crate::storage::{Storage, StorageError};
+
+/// Error returned by [`RateTier::check()`].
+///
+/// Distinguishes between an unknown tier name (a configuration/logic error)
+/// and a storage backend failure (e.g., Redis connection lost).
+#[derive(Debug)]
+pub enum CheckError {
+    /// The tier name passed to `check()` does not exist in the configured tiers.
+    UnknownTier(String),
+    /// The storage backend failed during the rate limit check.
+    Storage(StorageError),
+}
+
+impl fmt::Display for CheckError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CheckError::UnknownTier(name) => write!(f, "unknown tier: {}", name),
+            CheckError::Storage(err) => write!(f, "{}", err),
+        }
+    }
+}
+
+impl std::error::Error for CheckError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            CheckError::UnknownTier(_) => None,
+            CheckError::Storage(err) => Some(err),
+        }
+    }
+}
+
+impl From<StorageError> for CheckError {
+    fn from(err: StorageError) -> Self {
+        CheckError::Storage(err)
+    }
+}
 
 /// Tier-based rate limiter configuration.
 ///
@@ -73,18 +109,23 @@ impl RateTier {
     /// Programmatic rate limit check (non-HTTP).
     ///
     /// Returns `Ok(Ok(info))` if allowed, `Ok(Err(limited))` if denied,
-    /// `Err(StorageError)` if the storage backend fails.
+    /// or `Err(CheckError)` if the tier is unknown or the storage backend fails.
     /// Unlimited tiers always return `Ok(Ok(...))` without touching storage.
+    ///
+    /// # Errors
+    ///
+    /// - [`CheckError::UnknownTier`] — the tier name does not exist in the configured tiers.
+    /// - [`CheckError::Storage`] — the storage backend failed (e.g., Redis connection lost).
     pub async fn check(
         &self,
         user_id: &str,
         tier_name: &str,
         cost: u32,
-    ) -> Result<Result<RateLimitInfo, RateLimited>, StorageError> {
+    ) -> Result<Result<RateLimitInfo, RateLimited>, CheckError> {
         let quota = self
             .tiers
             .get(tier_name)
-            .unwrap_or_else(|| panic!("unknown tier: {}", tier_name));
+            .ok_or_else(|| CheckError::UnknownTier(tier_name.to_string()))?;
 
         if quota.is_unlimited() {
             return Ok(Ok(RateLimitInfo {
@@ -95,7 +136,7 @@ impl RateTier {
         }
 
         let now = self.clock.now();
-        self.storage.check_and_update(user_id, quota, cost, now).await
+        Ok(self.storage.check_and_update(user_id, quota, cost, now).await?)
     }
 }
 
