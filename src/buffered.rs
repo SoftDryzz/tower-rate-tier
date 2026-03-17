@@ -143,7 +143,7 @@ where
                         return inner.call(req).await;
                     }
                     OnMissing::Deny(status) => {
-                        return Ok(response::deny_response(*status).map(Into::into));
+                        return Ok(response::deny_response(status).map(Into::into));
                     }
                     OnMissing::UseDefault => {
                         if let Some(default) = rate_tier.default_tier() {
