@@ -87,8 +87,8 @@ impl RateTier {
     }
 
     /// Get the on_missing policy.
-    pub fn on_missing(&self) -> &OnMissing {
-        &self.on_missing
+    pub fn on_missing(&self) -> OnMissing {
+        self.on_missing
     }
 
     /// Get the default tier name, if set.

@@ -1,7 +1,7 @@
 use http::StatusCode;
 
 /// Behavior when the identifier cannot determine the user/tier.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum OnMissing {
     /// Use the default tier's quota.
     #[default]
