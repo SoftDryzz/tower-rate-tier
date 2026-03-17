@@ -137,7 +137,10 @@ impl RateTier {
 
         let now = self.clock.now();
         let storage_key = format!("{}:{}", user_id, tier_name);
-        Ok(self.storage.check_and_update(&storage_key, quota, cost, now).await?)
+        Ok(self
+            .storage
+            .check_and_update(&storage_key, quota, cost, now)
+            .await?)
     }
 }
 
@@ -248,7 +251,11 @@ impl RateTierBuilder {
             None => {
                 let memory = Arc::new(MemoryStorage::new());
                 let gc = if self.gc_enabled {
-                    Some(GcHandle::spawn(memory.clone(), clock.clone(), self.gc_interval))
+                    Some(GcHandle::spawn(
+                        memory.clone(),
+                        clock.clone(),
+                        self.gc_interval,
+                    ))
                 } else {
                     None
                 };

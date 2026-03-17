@@ -8,7 +8,10 @@ use tower_rate_tier::TierIdentifier;
 struct MockIdentifier;
 
 impl TierIdentifier for MockIdentifier {
-    fn identify(&self, headers: &HeaderMap) -> Pin<Box<dyn Future<Output = Option<TierIdentity>> + Send + '_>> {
+    fn identify(
+        &self,
+        headers: &HeaderMap,
+    ) -> Pin<Box<dyn Future<Output = Option<TierIdentity>> + Send + '_>> {
         let result = headers
             .get("X-Api-Key")
             .and_then(|v| v.to_str().ok())

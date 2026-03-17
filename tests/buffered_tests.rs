@@ -38,7 +38,10 @@ impl Service<Request<Full<Bytes>>> for EchoService {
 struct BodyJsonIdentifier;
 
 impl TierIdentifier for BodyJsonIdentifier {
-    fn identify(&self, _headers: &HeaderMap) -> Pin<Box<dyn Future<Output = Option<TierIdentity>> + Send + '_>> {
+    fn identify(
+        &self,
+        _headers: &HeaderMap,
+    ) -> Pin<Box<dyn Future<Output = Option<TierIdentity>> + Send + '_>> {
         Box::pin(std::future::ready(None))
     }
 

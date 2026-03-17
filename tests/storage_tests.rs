@@ -13,10 +13,26 @@ async fn basic_allow_and_deny() {
     let q = Quota::per_second(3);
     let now = 1_000_000_000;
 
-    assert!(storage.check_and_update("u1", &q, 1, now).await.unwrap().is_ok());
-    assert!(storage.check_and_update("u1", &q, 1, now).await.unwrap().is_ok());
-    assert!(storage.check_and_update("u1", &q, 1, now).await.unwrap().is_ok());
-    assert!(storage.check_and_update("u1", &q, 1, now).await.unwrap().is_err());
+    assert!(storage
+        .check_and_update("u1", &q, 1, now)
+        .await
+        .unwrap()
+        .is_ok());
+    assert!(storage
+        .check_and_update("u1", &q, 1, now)
+        .await
+        .unwrap()
+        .is_ok());
+    assert!(storage
+        .check_and_update("u1", &q, 1, now)
+        .await
+        .unwrap()
+        .is_ok());
+    assert!(storage
+        .check_and_update("u1", &q, 1, now)
+        .await
+        .unwrap()
+        .is_err());
 }
 
 #[tokio::test]
@@ -25,12 +41,28 @@ async fn independent_keys() {
     let q = Quota::per_second(1);
     let now = 1_000_000_000;
 
-    assert!(storage.check_and_update("u1", &q, 1, now).await.unwrap().is_ok());
-    assert!(storage.check_and_update("u2", &q, 1, now).await.unwrap().is_ok());
+    assert!(storage
+        .check_and_update("u1", &q, 1, now)
+        .await
+        .unwrap()
+        .is_ok());
+    assert!(storage
+        .check_and_update("u2", &q, 1, now)
+        .await
+        .unwrap()
+        .is_ok());
 
     // u1 is exhausted, u2 is exhausted, but they don't interfere
-    assert!(storage.check_and_update("u1", &q, 1, now).await.unwrap().is_err());
-    assert!(storage.check_and_update("u2", &q, 1, now).await.unwrap().is_err());
+    assert!(storage
+        .check_and_update("u1", &q, 1, now)
+        .await
+        .unwrap()
+        .is_err());
+    assert!(storage
+        .check_and_update("u2", &q, 1, now)
+        .await
+        .unwrap()
+        .is_err());
 }
 
 #[tokio::test]
@@ -39,11 +71,23 @@ async fn recovery_after_time() {
     let q = Quota::per_second(1);
     let now = 1_000_000_000;
 
-    assert!(storage.check_and_update("u1", &q, 1, now).await.unwrap().is_ok());
-    assert!(storage.check_and_update("u1", &q, 1, now).await.unwrap().is_err());
+    assert!(storage
+        .check_and_update("u1", &q, 1, now)
+        .await
+        .unwrap()
+        .is_ok());
+    assert!(storage
+        .check_and_update("u1", &q, 1, now)
+        .await
+        .unwrap()
+        .is_err());
 
     let later = now + Duration::from_secs(1).as_nanos() as u64;
-    assert!(storage.check_and_update("u1", &q, 1, later).await.unwrap().is_ok());
+    assert!(storage
+        .check_and_update("u1", &q, 1, later)
+        .await
+        .unwrap()
+        .is_ok());
 }
 
 #[tokio::test]
@@ -52,11 +96,23 @@ async fn cost_consumes_multiple() {
     let q = Quota::per_second(10);
     let now = 1_000_000_000;
 
-    let info = storage.check_and_update("u1", &q, 7, now).await.unwrap().unwrap();
+    let info = storage
+        .check_and_update("u1", &q, 7, now)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(info.remaining, 3);
 
-    assert!(storage.check_and_update("u1", &q, 5, now).await.unwrap().is_err());
-    assert!(storage.check_and_update("u1", &q, 3, now).await.unwrap().is_ok());
+    assert!(storage
+        .check_and_update("u1", &q, 5, now)
+        .await
+        .unwrap()
+        .is_err());
+    assert!(storage
+        .check_and_update("u1", &q, 3, now)
+        .await
+        .unwrap()
+        .is_ok());
 }
 
 #[tokio::test]
@@ -66,7 +122,11 @@ async fn remaining_accuracy() {
     let now = 1_000_000_000;
 
     for expected_remaining in (0..5).rev() {
-        let info = storage.check_and_update("u1", &q, 1, now).await.unwrap().unwrap();
+        let info = storage
+            .check_and_update("u1", &q, 1, now)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(info.remaining, expected_remaining);
     }
 }
@@ -82,7 +142,10 @@ async fn concurrent_access() {
         let s = storage.clone();
         let quota = q;
         handles.push(tokio::spawn(async move {
-            s.check_and_update("shared", &quota, 1, now).await.unwrap().is_ok()
+            s.check_and_update("shared", &quota, 1, now)
+                .await
+                .unwrap()
+                .is_ok()
         }));
     }
 
@@ -93,7 +156,10 @@ async fn concurrent_access() {
         }
     }
 
-    assert_eq!(allowed, 100, "exactly 100 of 200 requests should be allowed");
+    assert_eq!(
+        allowed, 100,
+        "exactly 100 of 200 requests should be allowed"
+    );
 }
 
 #[tokio::test]

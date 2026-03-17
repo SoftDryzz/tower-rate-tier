@@ -38,8 +38,7 @@ fn build_request(api_key: Option<&str>) -> Request<String> {
 
 fn build_request_with_cost(api_key: &str, cost: u32) -> Request<String> {
     let mut req = build_request(Some(api_key));
-    req.extensions_mut()
-        .insert(tower_rate_tier::TierCost(cost));
+    req.extensions_mut().insert(tower_rate_tier::TierCost(cost));
     req
 }
 
@@ -232,10 +231,7 @@ async fn cost_extension_affects_rate_limit() {
     let mut svc = layer.layer(OkService);
 
     // Free tier has 2/sec. Use cost=2 to exhaust in one request.
-    let resp = svc
-        .call(build_request_with_cost("user1", 2))
-        .await
-        .unwrap();
+    let resp = svc.call(build_request_with_cost("user1", 2)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
     // Next request should be denied
