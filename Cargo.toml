@@ -28,6 +28,7 @@ tokio = { version = "1", features = ["full", "test-util"] }
 hyper = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+base64 = "0.22"
 
 [features]
 default = []

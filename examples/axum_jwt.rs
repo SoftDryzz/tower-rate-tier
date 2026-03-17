@@ -14,6 +14,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use axum::{routing::get, Router};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use http::HeaderMap;
 use tower_rate_tier::{Quota, RateTier, TierIdentifier, TierIdentity, TierLimitLayer};
 
@@ -36,7 +37,7 @@ impl TierIdentifier for JwtIdentifier {
             }
 
             // Decode the payload (base64url → JSON)
-            let payload = base64_decode(parts[1])?;
+            let payload = URL_SAFE_NO_PAD.decode(parts[1]).ok()?;
             let claims: serde_json::Value = serde_json::from_slice(&payload).ok()?;
 
             let user_id = claims.get("user_id")?.as_str()?;
@@ -46,54 +47,6 @@ impl TierIdentifier for JwtIdentifier {
         })();
         Box::pin(std::future::ready(result))
     }
-}
-
-fn base64_decode(input: &str) -> Option<Vec<u8>> {
-    // Minimal base64url decoder (no padding)
-    let input = input.replace('-', "+").replace('_', "/");
-    let padded = match input.len() % 4 {
-        2 => format!("{}==", input),
-        3 => format!("{}=", input),
-        _ => input,
-    };
-
-    // Simple base64 decode using a lookup table
-    let table: Vec<u8> = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".to_vec();
-
-    let mut output = Vec::new();
-    let bytes: Vec<u8> = padded.bytes().collect();
-
-    for chunk in bytes.chunks(4) {
-        if chunk.len() != 4 {
-            return None;
-        }
-        let vals: Vec<Option<usize>> = chunk
-            .iter()
-            .map(|&b| {
-                if b == b'=' {
-                    Some(0)
-                } else {
-                    table.iter().position(|&t| t == b)
-                }
-            })
-            .collect();
-
-        if vals.iter().any(|v| v.is_none()) {
-            return None;
-        }
-        let vals: Vec<usize> = vals.into_iter().map(|v| v.unwrap()).collect();
-
-        let n = (vals[0] << 18) | (vals[1] << 12) | (vals[2] << 6) | vals[3];
-        output.push((n >> 16) as u8);
-        if chunk[2] != b'=' {
-            output.push((n >> 8 & 0xFF) as u8);
-        }
-        if chunk[3] != b'=' {
-            output.push((n & 0xFF) as u8);
-        }
-    }
-
-    Some(output)
 }
 
 #[tokio::main]
