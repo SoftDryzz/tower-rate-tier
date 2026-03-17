@@ -40,6 +40,10 @@ pub type OnLimitedFn = dyn Fn(&str, &str, &RateLimited) + Send + Sync;
 /// Receives `(user_id, tier_name, rate_limited_info)` and returns a `Response<String>`.
 pub type RateLimitedResponseFn = dyn Fn(&str, &str, &RateLimited) -> Response<String> + Send + Sync;
 
+/// Tower layer for tier-based rate limiting.
+///
+/// Wraps an inner service with [`TierLimitService`]
+/// to enforce per-tier rate limits.
 #[derive(Clone)]
 pub struct TierLimitLayer {
     pub(crate) rate_tier: Arc<RateTier>,
@@ -168,7 +172,7 @@ impl TierLimitLayer {
     ///
     /// # Default body size limit
     ///
-    /// 64KB. Override with [`BufferedTierLimitLayer::max_body_size`].
+    /// 64KB. Override with [`BufferedTierLimitLayer::max_body_size`](crate::buffered::BufferedTierLimitLayer::max_body_size).
     #[cfg(feature = "buffered-body")]
     pub fn buffer_body(self) -> crate::buffered::BufferedTierLimitLayer {
         crate::buffered::BufferedTierLimitLayer {

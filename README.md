@@ -2,9 +2,10 @@
 
 **Tier-based rate limiting middleware for Tower.**
 
-[![Crates.io](https://img.shields.io/crates/v/tower-rate-tier.svg?v=1)](https://crates.io/crates/tower-rate-tier)
-[![Documentation](https://docs.rs/tower-rate-tier/badge.svg?v=1)](https://docs.rs/tower-rate-tier)
-[![License](https://img.shields.io/crates/l/tower-rate-tier.svg?v=1)](LICENSE-MIT)
+[![Crates.io](https://img.shields.io/crates/v/tower-rate-tier.svg)](https://crates.io/crates/tower-rate-tier)
+[![Documentation](https://docs.rs/tower-rate-tier/badge.svg)](https://docs.rs/tower-rate-tier)
+[![CI](https://github.com/SoftDryzz/tower-rate-tier/actions/workflows/ci.yml/badge.svg)](https://github.com/SoftDryzz/tower-rate-tier/actions/workflows/ci.yml)
+[![License](https://img.shields.io/crates/l/tower-rate-tier.svg)](LICENSE-MIT)
 
 Every SaaS API needs rate limiting by user plan (free/pro/enterprise). `tower-rate-tier` eliminates the 200-400 lines of custom middleware you'd otherwise write.
 
@@ -14,9 +15,10 @@ Every SaaS API needs rate limiting by user plan (free/pro/enterprise). `tower-ra
 - **Request cost/weight** — Expensive endpoints consume more quota (`/export` = 20, `/search` = 5)
 - **Async identifier** — Extract `(user_id, tier)` from headers, JWT, API keys, or request body
 - **GCRA algorithm** — Smooth rate enforcement, no burst-at-boundary issues (used by Stripe, GitHub, Shopify)
-- **Pluggable storage** — In-memory (DashMap) with automatic GC, Redis planned for v0.2
+- **Pluggable storage** — In-memory (DashMap) with automatic GC; custom backends via `Storage` trait
 - **Testable clock** — Deterministic time control in tests with `FakeClock`
-- **Standard headers** — `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`, `Retry-After`
+- **Standard headers** — `X-RateLimit-Limit`, `Remaining`, `Reset` (Unix timestamp), `Retry-After`
+- **Callbacks** — `on_limited` for metrics/logging, custom 429 response builder
 - **Tower-native** — Works with Axum, Tonic, Hyper, or any Tower-based framework
 
 ## Quick Start
@@ -25,7 +27,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tower-rate-tier = "0.1"
+tower-rate-tier = "0.2"
 ```
 
 ### Define Tiers
@@ -46,32 +48,13 @@ let tier = RateTier::builder()
 **With a closure** (simple cases):
 
 ```rust
-use tower_rate_tier::TierIdentity;
+use tower_rate_tier::{TierLimitLayer, TierIdentity};
 
 let layer = TierLimitLayer::new(tier)
-    .identifier_fn(|headers: &HeaderMap| {
+    .identifier_fn(|headers| {
         let api_key = headers.get("X-Api-Key")?.to_str().ok()?.to_owned();
         Some(TierIdentity::new(api_key, "free"))
     });
-```
-
-**With a trait** (async lookups):
-
-```rust
-use tower_rate_tier::{TierIdentifier, TierIdentity};
-
-struct ApiKeyIdentifier { db: Pool }
-
-impl TierIdentifier for ApiKeyIdentifier {
-    async fn identify(&self, req: &HeaderMap) -> Option<TierIdentity> {
-        let key = req.get("X-Api-Key")?.to_str().ok()?;
-        let tier = self.db.get_tier(key).await?;
-        Some(TierIdentity::new(key, tier))
-    }
-}
-
-let layer = TierLimitLayer::new(tier)
-    .identifier(ApiKeyIdentifier { db });
 ```
 
 ### Apply to Routes
@@ -84,6 +67,7 @@ let app = Router::new()
     .route("/api/users", get(list_users))                   // cost: 1 (default)
     .route("/api/search", post(search).layer(tier_cost(5)))  // cost: 5
     .route("/api/export", post(export).layer(tier_cost(20))) // cost: 20
+    .route("/health", get(health).layer(tier_cost(0)))       // free (no quota consumed)
     .layer(layer);
 ```
 
@@ -99,17 +83,55 @@ X-RateLimit-Reset: 1710432000
 Retry-After: 2450
 Content-Type: application/json
 
-{"error": "rate limit exceeded", "tier": "free", "retry_after": 2450}
+{"error":"rate limit exceeded","tier":"free","retry_after":2450}
+```
+
+### Custom 429 Response
+
+```rust
+let layer = TierLimitLayer::new(tier)
+    .identifier_fn(|headers| { /* ... */ None })
+    .rate_limited_response(|_user_id, tier, limited| {
+        Response::builder()
+            .status(StatusCode::TOO_MANY_REQUESTS)
+            .header("Content-Type", "application/problem+json")
+            .header("Retry-After", limited.retry_after.as_secs())
+            .body(format!(r#"{{"type":"rate_limit","tier":"{}"}}"#, tier))
+            .unwrap()
+    });
+```
+
+### Metrics / Logging
+
+```rust
+let layer = TierLimitLayer::new(tier)
+    .identifier_fn(|headers| { /* ... */ None })
+    .on_limited(|user_id, tier, limited| {
+        eprintln!("rate limited: user={user_id} tier={tier} retry_after={:?}", limited.retry_after);
+    });
 ```
 
 ## Optional Features
 
 ```toml
 # Body-based identification (opt-in, buffers request body)
-tower-rate-tier = { version = "0.1", features = ["buffered-body"] }
+tower-rate-tier = { version = "0.2", features = ["buffered-body"] }
 ```
 
-> Redis support for distributed rate limiting is planned for v0.2.
+## Custom Storage Backend
+
+Implement the `Storage` trait for your own backend:
+
+```rust
+let custom_storage: Arc<dyn Storage> = Arc::new(MyRedisStorage::new());
+
+let tier = RateTier::builder()
+    .tier("free", Quota::per_hour(100))
+    .storage(custom_storage) // GC disabled automatically for custom backends
+    .build();
+```
+
+> Redis support is planned for v0.3.
 
 ## Testing
 
@@ -136,8 +158,6 @@ async fn test_rate_limit_expiry() {
 
 ## Handling Unidentified Requests
 
-Configure behavior when the identifier returns `None`:
-
 ```rust
 let tier = RateTier::builder()
     .on_missing(OnMissing::UseDefault)           // Use default tier
@@ -147,8 +167,6 @@ let tier = RateTier::builder()
 ```
 
 ## Storage Error Behavior
-
-Configure behavior when the storage backend fails:
 
 ```rust
 let layer = TierLimitLayer::new(tier)
@@ -164,7 +182,7 @@ let layer = TierLimitLayer::new(tier)
 | Request cost/weight | No | No | No | **Yes** |
 | Async identifier | No | Partial | No | **Yes** |
 | Body-based identification | No | No | No | **Yes** |
-| Distributed (Redis) | No | No | No | **Planned v0.2** |
+| Custom storage | No | No | No | **Yes** |
 | Testable clock | No | Yes | No | **Yes** |
 | Tower-compatible | Yes | Axum only | Axum only | **Yes** |
 | Algorithm | GCRA | Token bucket | GCRA | **GCRA** |
