@@ -136,7 +136,8 @@ impl RateTier {
         }
 
         let now = self.clock.now();
-        Ok(self.storage.check_and_update(user_id, quota, cost, now).await?)
+        let storage_key = format!("{}:{}", user_id, tier_name);
+        Ok(self.storage.check_and_update(&storage_key, quota, cost, now).await?)
     }
 }
 

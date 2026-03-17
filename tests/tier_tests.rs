@@ -176,3 +176,25 @@ async fn check_with_cost() {
     assert!(limiter.check("u1", "free", 5).await.unwrap().is_err());
     assert!(limiter.check("u1", "free", 3).await.unwrap().is_ok());
 }
+
+#[tokio::test]
+async fn check_tier_upgrade_gets_new_quota() {
+    let clock = FakeClock::new();
+    clock.set(1_000_000_000);
+
+    let limiter = RateTier::builder()
+        .tier("free", Quota::per_minute(2))
+        .tier("pro", Quota::per_minute(100))
+        .clock(clock)
+        .build();
+
+    // Exhaust free tier quota
+    assert!(limiter.check("alice", "free", 1).await.unwrap().is_ok());
+    assert!(limiter.check("alice", "free", 1).await.unwrap().is_ok());
+    assert!(limiter.check("alice", "free", 1).await.unwrap().is_err());
+
+    // Same user upgrades to pro — should have full pro quota (separate storage key)
+    assert!(limiter.check("alice", "pro", 1).await.unwrap().is_ok());
+    let info = limiter.check("alice", "pro", 1).await.unwrap().unwrap();
+    assert!(info.remaining > 0, "pro tier should have remaining quota");
+}
