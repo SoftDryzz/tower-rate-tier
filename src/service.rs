@@ -109,14 +109,16 @@ where
                 .check_and_update(&user_id, quota, cost, now)
                 .await;
 
+            let unix_offset = rate_tier.clock().unix_offset_nanos();
+
             match result {
                 Ok(Ok(info)) => {
                     let mut resp = inner.call(req).await?;
-                    response::inject_headers(&mut resp, &info);
+                    response::inject_headers(&mut resp, &info, unix_offset);
                     Ok(resp)
                 }
                 Ok(Err(limited)) => {
-                    Ok(response::rate_limited_response(&limited, &tier_name).map(Into::into))
+                    Ok(response::rate_limited_response(&limited, &tier_name, unix_offset).map(Into::into))
                 }
                 Err(_storage_err) => match on_storage_error {
                     OnStorageError::Allow => inner.call(req).await,

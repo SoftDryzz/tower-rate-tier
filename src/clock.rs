@@ -10,21 +10,43 @@ use crate::quota::Nanos;
 pub trait Clock: Send + Sync + 'static {
     /// Returns the current time in nanoseconds since an arbitrary epoch.
     fn now(&self) -> Nanos;
+
+    /// Returns the Unix timestamp offset in nanoseconds.
+    ///
+    /// This offset, when added to a value from [`now()`](Clock::now), produces
+    /// a nanosecond-precision Unix timestamp. Used by the response layer to emit
+    /// `X-RateLimit-Reset` as a standard Unix timestamp.
+    ///
+    /// Default returns `0`, which is suitable for testing with [`FakeClock`].
+    fn unix_offset_nanos(&self) -> u64 {
+        0
+    }
 }
 
 /// Real clock backed by `tokio::time::Instant`.
 ///
 /// Uses a fixed epoch (created at construction time) and measures elapsed
-/// nanoseconds from that point.
+/// nanoseconds from that point. The Unix offset is captured at construction
+/// so that internal timestamps can be converted to Unix timestamps for
+/// HTTP headers.
 pub struct SystemClock {
     epoch: tokio::time::Instant,
+    unix_offset: u64,
 }
 
 impl SystemClock {
     /// Creates a new `SystemClock` with the current instant as its epoch.
+    ///
+    /// Captures the current Unix time so that elapsed values can be converted
+    /// to Unix timestamps via [`unix_offset_nanos()`](Clock::unix_offset_nanos).
     pub fn new() -> Self {
+        let unix_nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time before Unix epoch")
+            .as_nanos() as u64;
         Self {
             epoch: tokio::time::Instant::now(),
+            unix_offset: unix_nanos,
         }
     }
 }
@@ -38,6 +60,10 @@ impl Default for SystemClock {
 impl Clock for SystemClock {
     fn now(&self) -> Nanos {
         self.epoch.elapsed().as_nanos() as Nanos
+    }
+
+    fn unix_offset_nanos(&self) -> u64 {
+        self.unix_offset
     }
 }
 

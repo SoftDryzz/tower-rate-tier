@@ -4,7 +4,10 @@ use http::{Response, StatusCode};
 use crate::gcra::{RateLimitInfo, RateLimited};
 
 /// Inject `X-RateLimit-*` headers into a successful response.
-pub fn inject_headers<B>(response: &mut Response<B>, info: &RateLimitInfo) {
+///
+/// `unix_offset_nanos` is added to `reset_at` to produce a Unix timestamp
+/// for the `X-RateLimit-Reset` header.
+pub fn inject_headers<B>(response: &mut Response<B>, info: &RateLimitInfo, unix_offset_nanos: u64) {
     let headers = response.headers_mut();
     headers.insert(
         "X-RateLimit-Limit",
@@ -16,12 +19,15 @@ pub fn inject_headers<B>(response: &mut Response<B>, info: &RateLimitInfo) {
     );
     headers.insert(
         "X-RateLimit-Reset",
-        header_value_from_nanos(info.reset_at),
+        reset_header_value(info.reset_at, unix_offset_nanos),
     );
 }
 
 /// Build a 429 Too Many Requests response with JSON body and rate limit headers.
-pub fn rate_limited_response(limited: &RateLimited, tier: &str) -> Response<String> {
+///
+/// `unix_offset_nanos` is added to `reset_at` to produce a Unix timestamp
+/// for the `X-RateLimit-Reset` header.
+pub fn rate_limited_response(limited: &RateLimited, tier: &str, unix_offset_nanos: u64) -> Response<String> {
     let retry_after_secs = limited.retry_after.as_secs();
 
     let body = format!(
@@ -35,7 +41,7 @@ pub fn rate_limited_response(limited: &RateLimited, tier: &str) -> Response<Stri
         .header("Retry-After", retry_after_secs)
         .header("X-RateLimit-Limit", limited.limit)
         .header("X-RateLimit-Remaining", 0u32)
-        .header("X-RateLimit-Reset", header_value_from_nanos(limited.reset_at))
+        .header("X-RateLimit-Reset", reset_header_value(limited.reset_at, unix_offset_nanos))
         .body(body)
         .unwrap();
 
@@ -68,8 +74,13 @@ pub fn storage_error_response() -> Response<String> {
         .unwrap()
 }
 
-fn header_value_from_nanos(nanos: u64) -> HeaderValue {
-    let secs = nanos / 1_000_000_000;
+/// Convert an internal `reset_at` value to a Unix-timestamp `HeaderValue`.
+///
+/// Adds `unix_offset_nanos` to convert from process-local epoch to Unix epoch,
+/// then divides by 1e9 to get seconds.
+fn reset_header_value(reset_at_nanos: u64, unix_offset_nanos: u64) -> HeaderValue {
+    let unix_nanos = reset_at_nanos.saturating_add(unix_offset_nanos);
+    let secs = unix_nanos / 1_000_000_000;
     HeaderValue::from(secs)
 }
 
