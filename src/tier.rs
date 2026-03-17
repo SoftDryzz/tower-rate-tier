@@ -147,8 +147,9 @@ pub struct RateTierBuilder {
     default_tier: Option<String>,
     on_missing: OnMissing,
     clock: Option<Arc<dyn Clock>>,
-    storage: Option<Arc<MemoryStorage>>,
+    storage: Option<Arc<dyn Storage>>,
     gc_interval: Duration,
+    gc_enabled: bool,
 }
 
 impl Default for RateTierBuilder {
@@ -160,6 +161,7 @@ impl Default for RateTierBuilder {
             clock: None,
             storage: None,
             gc_interval: Duration::from_secs(60),
+            gc_enabled: true,
         }
     }
 }
@@ -189,11 +191,34 @@ impl RateTierBuilder {
         self
     }
 
+    /// Set a custom storage backend.
+    ///
+    /// When a custom storage is provided, garbage collection is automatically
+    /// disabled (custom backends are expected to manage their own expiry,
+    /// e.g., Redis TTL). Use [`gc_interval`](Self::gc_interval) to re-enable
+    /// GC if your custom backend needs it.
+    pub fn storage(mut self, storage: Arc<dyn Storage>) -> Self {
+        self.storage = Some(storage);
+        self.gc_enabled = false;
+        self
+    }
+
     /// Set the garbage collection interval for expired entries.
     ///
-    /// Default: 60 seconds.
+    /// Default: 60 seconds. Only applies when using the built-in
+    /// `MemoryStorage` backend.
     pub fn gc_interval(mut self, interval: Duration) -> Self {
         self.gc_interval = interval;
+        self.gc_enabled = true;
+        self
+    }
+
+    /// Disable automatic garbage collection of expired entries.
+    ///
+    /// Useful when using a storage backend that manages its own expiry
+    /// (e.g., Redis with TTL).
+    pub fn disable_gc(mut self) -> Self {
+        self.gc_enabled = false;
         self
     }
 
@@ -215,11 +240,21 @@ impl RateTierBuilder {
         }
 
         let clock: Arc<dyn Clock> = self.clock.unwrap_or_else(|| Arc::new(SystemClock::new()));
-        let storage = self
-            .storage
-            .unwrap_or_else(|| Arc::new(MemoryStorage::new()));
 
-        let gc = GcHandle::spawn(storage.clone(), clock.clone(), self.gc_interval);
+        // Use provided storage or default to MemoryStorage.
+        // GC only spawns for the default MemoryStorage and when gc_enabled is true.
+        let (storage, gc): (Arc<dyn Storage>, Option<GcHandle>) = match self.storage {
+            Some(custom) => (custom, None),
+            None => {
+                let memory = Arc::new(MemoryStorage::new());
+                let gc = if self.gc_enabled {
+                    Some(GcHandle::spawn(memory.clone(), clock.clone(), self.gc_interval))
+                } else {
+                    None
+                };
+                (memory, gc)
+            }
+        };
 
         RateTier {
             tiers: self.tiers,
@@ -227,7 +262,7 @@ impl RateTierBuilder {
             on_missing: self.on_missing,
             storage,
             clock,
-            _gc: Some(gc),
+            _gc: gc,
         }
     }
 }
