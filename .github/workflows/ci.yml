@@ -58,3 +58,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: RUSTDOCFLAGS="-D warnings -W missing_docs" cargo doc --no-deps --all-features
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      # Cargo.lock is not committed, so audit the versions a fresh resolve picks.
+      - run: cargo generate-lockfile
+      - run: cargo audit
