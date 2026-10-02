@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - `Debug` implementations for all public types (`MemoryStorage` shows only its entry count, never user keys)
 
+### Changed
+
+- **Breaking:** `OnMissing`, `OnStorageError` and `CheckError` are `#[non_exhaustive]`, so new variants can be added without another breaking release
+
 ### Removed
 
 - Unused `tower` and `pin-project-lite` dependencies

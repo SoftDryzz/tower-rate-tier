@@ -16,6 +16,7 @@ use crate::storage::{Storage, StorageError};
 /// Distinguishes between an unknown tier name (a configuration/logic error)
 /// and a storage backend failure (e.g., Redis connection lost).
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum CheckError {
     /// The tier name passed to `check()` does not exist in the configured tiers.
     UnknownTier(String),

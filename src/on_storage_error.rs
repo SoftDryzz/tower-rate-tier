@@ -1,5 +1,6 @@
 /// Behavior when the storage backend fails (e.g., Redis is down).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum OnStorageError {
     /// Fail open: let the request through without rate limiting.
     #[default]
