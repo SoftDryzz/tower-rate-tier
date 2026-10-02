@@ -238,3 +238,16 @@ async fn check_tier_upgrade_gets_new_quota() {
     let info = limiter.check("alice", "pro", 1).await.unwrap().unwrap();
     assert!(info.remaining > 0, "pro tier should have remaining quota");
 }
+
+#[tokio::test]
+async fn users_in_different_tiers_never_share_a_bucket() {
+    let limiter = RateTier::builder()
+        .tier("c", Quota::per_hour(1))
+        .tier("b:c", Quota::per_hour(1))
+        .clock(FakeClock::new())
+        .build();
+
+    assert!(limiter.check("a:b", "c", 1).await.unwrap().is_ok());
+    // Both used to be stored under the same "a:b:c" key.
+    assert!(limiter.check("a", "b:c", 1).await.unwrap().is_ok());
+}

@@ -9,7 +9,7 @@ use crate::gcra::{RateLimitInfo, RateLimited};
 use crate::on_missing::OnMissing;
 use crate::quota::Quota;
 use crate::storage::memory::MemoryStorage;
-use crate::storage::{Storage, StorageError};
+use crate::storage::{Storage, StorageError, StorageKey};
 
 /// Error returned by [`RateTier::check()`].
 ///
@@ -178,10 +178,10 @@ impl RateTier {
         }
 
         let now = self.clock.now();
-        let storage_key = format!("{}:{}", user_id, tier_name);
+        let key = StorageKey::new(user_id, tier_name);
         Ok(self
             .storage()
-            .check_and_update(&storage_key, quota, cost, now)
+            .check_and_update(key, quota, cost, now)
             .await?)
     }
 }

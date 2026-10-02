@@ -46,7 +46,7 @@ pub use layer::TierLimitLayer;
 pub use on_missing::OnMissing;
 pub use on_storage_error::OnStorageError;
 pub use quota::{Nanos, Quota};
-pub use storage::StorageError;
+pub use storage::{StorageError, StorageKey};
 pub use tier::{CheckError, RateTier};
 
 #[cfg(feature = "buffered-body")]

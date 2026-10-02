@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - **Breaking:** `OnMissing`, `OnStorageError` and `CheckError` are `#[non_exhaustive]`, so new variants can be added without another breaking release
 - **Breaking:** `RateLimitInfo` and `RateLimited` report `reset_after: Duration` (time until the quota fully replenishes) instead of an absolute `reset_at: Nanos`, so results no longer depend on the storage backend's clock. Both now derive `PartialEq` and `Eq`
+- **Breaking:** `Storage::check_and_update()` takes a `StorageKey { user_id, tier }` instead of a pre-joined `&str`, and the key, quota and returned future share one lifetime so async backends can borrow them
 - **Breaking:** `Clock::unix_offset_nanos()` is removed and `SystemClock` is purely monotonic. `response::inject_headers()` and `response::rate_limited_response()` take the wall-clock `now: SystemTime` instead of a Unix offset
 
 ### Removed
@@ -22,6 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- A user in one tier could share a bucket with another user in another tier when the names contained `:` (user `a:b` in tier `c` and user `a` in tier `b:c` were both stored as `a:b:c`)
 - `X-RateLimit-Reset` on a 429 counted the rejected request, so it reported the reset one emission interval (times the request cost) too late
 - `Retry-After` was rounded down, so a client that waited exactly that long was rejected again. It is now rounded up, and the JSON body's `retry_after` always matches the header
 - `MemoryStorage` let concurrent requests for the same key exceed the quota, because the check and the update were not atomic

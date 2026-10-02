@@ -4,8 +4,12 @@ use std::time::Duration;
 use tower_rate_tier::clock::{Clock, FakeClock};
 use tower_rate_tier::gc::GcHandle;
 use tower_rate_tier::storage::memory::MemoryStorage;
-use tower_rate_tier::storage::Storage;
+use tower_rate_tier::storage::{Storage, StorageKey};
 use tower_rate_tier::Quota;
+
+fn key(user_id: &str) -> StorageKey<'_> {
+    StorageKey::new(user_id, "free")
+}
 
 #[tokio::test]
 async fn basic_allow_and_deny() {
@@ -14,22 +18,22 @@ async fn basic_allow_and_deny() {
     let now = 1_000_000_000;
 
     assert!(storage
-        .check_and_update("u1", &q, 1, now)
+        .check_and_update(key("u1"), &q, 1, now)
         .await
         .unwrap()
         .is_ok());
     assert!(storage
-        .check_and_update("u1", &q, 1, now)
+        .check_and_update(key("u1"), &q, 1, now)
         .await
         .unwrap()
         .is_ok());
     assert!(storage
-        .check_and_update("u1", &q, 1, now)
+        .check_and_update(key("u1"), &q, 1, now)
         .await
         .unwrap()
         .is_ok());
     assert!(storage
-        .check_and_update("u1", &q, 1, now)
+        .check_and_update(key("u1"), &q, 1, now)
         .await
         .unwrap()
         .is_err());
@@ -42,24 +46,24 @@ async fn independent_keys() {
     let now = 1_000_000_000;
 
     assert!(storage
-        .check_and_update("u1", &q, 1, now)
+        .check_and_update(key("u1"), &q, 1, now)
         .await
         .unwrap()
         .is_ok());
     assert!(storage
-        .check_and_update("u2", &q, 1, now)
+        .check_and_update(key("u2"), &q, 1, now)
         .await
         .unwrap()
         .is_ok());
 
     // u1 is exhausted, u2 is exhausted, but they don't interfere
     assert!(storage
-        .check_and_update("u1", &q, 1, now)
+        .check_and_update(key("u1"), &q, 1, now)
         .await
         .unwrap()
         .is_err());
     assert!(storage
-        .check_and_update("u2", &q, 1, now)
+        .check_and_update(key("u2"), &q, 1, now)
         .await
         .unwrap()
         .is_err());
@@ -72,19 +76,19 @@ async fn recovery_after_time() {
     let now = 1_000_000_000;
 
     assert!(storage
-        .check_and_update("u1", &q, 1, now)
+        .check_and_update(key("u1"), &q, 1, now)
         .await
         .unwrap()
         .is_ok());
     assert!(storage
-        .check_and_update("u1", &q, 1, now)
+        .check_and_update(key("u1"), &q, 1, now)
         .await
         .unwrap()
         .is_err());
 
     let later = now + Duration::from_secs(1).as_nanos() as u64;
     assert!(storage
-        .check_and_update("u1", &q, 1, later)
+        .check_and_update(key("u1"), &q, 1, later)
         .await
         .unwrap()
         .is_ok());
@@ -97,19 +101,19 @@ async fn cost_consumes_multiple() {
     let now = 1_000_000_000;
 
     let info = storage
-        .check_and_update("u1", &q, 7, now)
+        .check_and_update(key("u1"), &q, 7, now)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(info.remaining, 3);
 
     assert!(storage
-        .check_and_update("u1", &q, 5, now)
+        .check_and_update(key("u1"), &q, 5, now)
         .await
         .unwrap()
         .is_err());
     assert!(storage
-        .check_and_update("u1", &q, 3, now)
+        .check_and_update(key("u1"), &q, 3, now)
         .await
         .unwrap()
         .is_ok());
@@ -123,7 +127,7 @@ async fn remaining_accuracy() {
 
     for expected_remaining in (0..5).rev() {
         let info = storage
-            .check_and_update("u1", &q, 1, now)
+            .check_and_update(key("u1"), &q, 1, now)
             .await
             .unwrap()
             .unwrap();
@@ -152,7 +156,7 @@ fn concurrent_access() {
                 std::thread::spawn(move || {
                     b.wait();
                     handle
-                        .block_on(s.check_and_update("shared", &q, 1, now))
+                        .block_on(s.check_and_update(key("shared"), &q, 1, now))
                         .unwrap()
                         .is_ok()
                 })
@@ -181,8 +185,8 @@ async fn len_and_is_empty() {
     assert!(storage.is_empty());
     assert_eq!(storage.len(), 0);
 
-    let _ = storage.check_and_update("u1", &q, 1, now).await;
-    let _ = storage.check_and_update("u2", &q, 1, now).await;
+    let _ = storage.check_and_update(key("u1"), &q, 1, now).await;
+    let _ = storage.check_and_update(key("u2"), &q, 1, now).await;
 
     assert_eq!(storage.len(), 2);
     assert!(!storage.is_empty());
@@ -194,8 +198,8 @@ async fn retain_active_removes_expired() {
     let q = Quota::per_second(1);
     let now = 1_000_000_000;
 
-    let _ = storage.check_and_update("u1", &q, 1, now).await;
-    let _ = storage.check_and_update("u2", &q, 1, now).await;
+    let _ = storage.check_and_update(key("u1"), &q, 1, now).await;
+    let _ = storage.check_and_update(key("u2"), &q, 1, now).await;
     assert_eq!(storage.len(), 2);
 
     // Advance well past expiry
@@ -210,7 +214,7 @@ async fn retain_active_preserves_active() {
     let q = Quota::per_second(1);
     let now = 1_000_000_000;
 
-    let _ = storage.check_and_update("u1", &q, 1, now).await;
+    let _ = storage.check_and_update(key("u1"), &q, 1, now).await;
     assert_eq!(storage.len(), 1);
 
     // Retain at current time — entry TAT is in the future, should be kept
@@ -226,7 +230,9 @@ async fn gc_cleans_expired_entries() {
     let storage = Arc::new(MemoryStorage::new());
     let q = Quota::per_second(1);
 
-    let _ = storage.check_and_update("u1", &q, 1, clock.now()).await;
+    let _ = storage
+        .check_and_update(key("u1"), &q, 1, clock.now())
+        .await;
     assert_eq!(storage.len(), 1);
 
     let _gc = GcHandle::spawn(
@@ -262,7 +268,7 @@ async fn gc_handle_aborts_on_drop() {
     let clock = FakeClock::new();
     let storage = Arc::new(MemoryStorage::new());
     let _ = storage
-        .check_and_update("u1", &Quota::per_second(1), 1, clock.now())
+        .check_and_update(key("u1"), &Quota::per_second(1), 1, clock.now())
         .await;
 
     drop(GcHandle::spawn(

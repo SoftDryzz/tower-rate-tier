@@ -14,6 +14,7 @@ use crate::identifier::TierIdentifier;
 use crate::layer::{OnLimitedFn, RateLimitedResponseFn};
 use crate::on_storage_error::OnStorageError;
 use crate::response;
+use crate::storage::StorageKey;
 use crate::tier::RateTier;
 
 /// Tower service that enforces tier-based rate limiting.
@@ -102,10 +103,10 @@ where
 
             let cost = req.extensions().get::<TierCost>().map(|c| c.0).unwrap_or(1);
             let now = rate_tier.clock().now();
-            let storage_key = format!("{}:{}", user_id, tier_name);
+            let key = StorageKey::new(&user_id, &tier_name);
             let result = rate_tier
                 .storage()
-                .check_and_update(&storage_key, quota, cost, now)
+                .check_and_update(key, quota, cost, now)
                 .await;
 
             // Wall-clock time of the check; the durations in the result are
