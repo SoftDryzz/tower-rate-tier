@@ -260,7 +260,7 @@ async fn cost_above_the_tier_limit_is_an_error() {
         .build();
 
     match limiter.check("u1", "free", 6).await {
-        Err(tower_rate_tier::CheckError::CostExceedsLimit { cost, limit }) => {
+        Err(tower_rate_tier::CheckError::CostExceedsLimit { cost, limit, .. }) => {
             assert_eq!((cost, limit), (6, 5));
         }
         other => panic!("expected CostExceedsLimit, got {other:?}"),

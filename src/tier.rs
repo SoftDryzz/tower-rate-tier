@@ -25,6 +25,7 @@ pub enum CheckError {
     Storage(StorageError),
     /// The request costs more than the tier allows in a whole window, so it
     /// can never be allowed. Nothing was consumed.
+    #[non_exhaustive]
     CostExceedsLimit {
         /// The cost of the rejected request.
         cost: u32,

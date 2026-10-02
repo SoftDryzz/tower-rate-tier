@@ -10,6 +10,7 @@ use crate::storage::StorageError;
 pub enum LimitEvent<'a> {
     /// The storage backend failed. The request was then handled by the
     /// [`OnStorageError`](crate::OnStorageError) policy.
+    #[non_exhaustive]
     StorageError {
         /// The identified user.
         user_id: &'a str,
@@ -20,6 +21,7 @@ pub enum LimitEvent<'a> {
     },
     /// The identifier returned a tier that is not configured. The request was
     /// then handled by the [`OnUnknownTier`](crate::OnUnknownTier) policy.
+    #[non_exhaustive]
     UnknownTier {
         /// The identified user.
         user_id: &'a str,
@@ -28,6 +30,7 @@ pub enum LimitEvent<'a> {
     },
     /// A request cost more than the tier allows in a whole window, so it was
     /// rejected without touching storage.
+    #[non_exhaustive]
     CostExceedsLimit {
         /// The identified user.
         user_id: &'a str,

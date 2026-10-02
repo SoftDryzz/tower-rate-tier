@@ -371,6 +371,7 @@ fn failing_layer(
                 user_id,
                 tier,
                 error,
+                ..
             } = event
             {
                 events
@@ -453,7 +454,7 @@ async fn unknown_tier_gets_the_default_quota_in_its_own_bucket() {
     let seen = events.clone();
     let mut svc = make_layer(FakeClock::new())
         .on_event(move |event| {
-            if let tower_rate_tier::LimitEvent::UnknownTier { user_id, tier } = event {
+            if let tower_rate_tier::LimitEvent::UnknownTier { user_id, tier, .. } = event {
                 seen.lock().unwrap().push(format!("{user_id}: {tier}"));
             }
         })

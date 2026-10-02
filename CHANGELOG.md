@@ -18,7 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
-- **Breaking:** `OnMissing`, `OnStorageError` and `CheckError` are `#[non_exhaustive]`, so new variants can be added without another breaking release
+- **Breaking:** `OnMissing`, `OnStorageError` and `CheckError` are `#[non_exhaustive]`, so new variants can be added without another breaking release. The new `LimitEvent` variants and `CheckError::CostExceedsLimit` are `#[non_exhaustive]` too, so their fields must be matched with `..`
 - **Breaking:** `RateLimitInfo` and `RateLimited` report `reset_after: Duration` (time until the quota fully replenishes) instead of an absolute `reset_at: Nanos`, so results no longer depend on the storage backend's clock. Both now derive `PartialEq` and `Eq`
 - **Breaking:** `Storage::check_and_update()` takes a `StorageKey { user_id, tier }` instead of a pre-joined `&str`, and the key, quota and returned future share one lifetime so async backends can borrow them
 - **Breaking:** `Clock::unix_offset_nanos()` is removed and `SystemClock` is purely monotonic. `response::inject_headers()` and `response::rate_limited_response()` take the wall-clock `now: SystemTime` instead of a Unix offset
