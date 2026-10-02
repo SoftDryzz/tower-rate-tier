@@ -39,6 +39,12 @@ pub struct RateLimited {
 ///
 /// * `Ok((new_tat, info))` - Request is allowed. `new_tat` should be stored.
 /// * `Err(limited)` - Request is denied.
+///
+/// # Panics
+///
+/// Panics if `emission_interval` is 0. Every [`Quota`](crate::Quota) built by
+/// its constructors (other than [`Quota::unlimited`](crate::Quota::unlimited),
+/// which is never checked) has a non-zero interval.
 pub fn check_gcra(
     tat: Option<Nanos>,
     now: Nanos,
