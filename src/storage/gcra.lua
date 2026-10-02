@@ -40,9 +40,10 @@
 -- Pitfalls the tests check
 --   * Lua numbers are doubles, exact for integers up to 2^53. That covers
 --     microseconds until the year 2255; nanoseconds would lose precision.
---   * A large number turned into a string with tostring(), or passed straight
---     to redis.call(), may come out as "1.7900000001235e+15". Store and return
---     integers, e.g. via string.format("%d", n).
+--   * Numbers passed straight to redis.call() or returned from the script
+--     are converted exactly by Redis. Lua's own conversions are not:
+--     tostring(n) and "x" .. n use "%.14g", so a 16-digit TAT becomes
+--     "1.7900000011235e+15". Avoid them, or use string.format("%d", n).
 --   * Calling TIME before a write needs effects replication: always on in
 --     Redis 7; call redis.replicate_commands() first to support Redis 5 and 6.
 
