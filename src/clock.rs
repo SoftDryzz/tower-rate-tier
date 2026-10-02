@@ -81,11 +81,21 @@ impl FakeClock {
     /// Saturates at `u64::MAX` if the total would overflow.
     pub fn advance(&self, duration: Duration) {
         let delta = duration.as_nanos().min(u64::MAX as u128) as u64;
-        let _ = self
-            .nanos
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-                Some(current.saturating_add(delta))
-            });
+        // A compare-exchange loop: `fetch_update` is deprecated since Rust
+        // 1.99 and its replacement does not exist on the 1.75 MSRV.
+        let mut current = self.nanos.load(Ordering::SeqCst);
+        loop {
+            let next = current.saturating_add(delta);
+            match self.nanos.compare_exchange_weak(
+                current,
+                next,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return,
+                Err(actual) => current = actual,
+            }
+        }
     }
 
     /// Set the clock to an absolute nanosecond value.
