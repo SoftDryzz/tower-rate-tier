@@ -8,8 +8,6 @@
 --                                                     Redis server needed)
 --   cargo test --features redis --test redis_tests  (a real Redis)
 --
--- TODO: implement the check described below.
---
 -- Input
 --   KEYS[1]  bucket key: one user within one tier.
 --   ARGV[1]  current time in microseconds since the Unix epoch, as an integer
@@ -41,16 +39,99 @@
 --            not in the future (a cost of 0 on a fresh bucket).
 --   limited  write nothing.
 --
--- Pitfalls the tests check
+-- Safety
+--   * Every write carries an expiry, so no key outlives its bucket.
+--   * Only KEYS[1] is read or written (required by Redis Cluster).
+--   * Malformed arguments, or values past the exact range of Lua numbers,
+--     return an error reply without writing. The message never includes the
+--     key or the arguments, since plain keys contain user ids.
+--   * A stored value that is not a number counts as a fresh bucket and is
+--     overwritten, so a corrupted key heals itself instead of failing every
+--     request for that user.
+--   * A TAT further ahead than one full burst can only come from a clock that
+--     moved back (for example, a failover to a replica whose clock is behind).
+--     It is capped, so the wait is never longer than for a full bucket.
+--
+-- Pitfalls
 --   * Lua numbers are doubles, exact for integers up to 2^53. That covers
 --     microseconds until the year 2255; nanoseconds would lose precision.
 --   * Numbers passed straight to redis.call() or returned from the script
 --     are converted exactly by Redis. Lua's own conversions are not:
 --     tostring(n) and "x" .. n use "%.14g", so a 16-digit TAT becomes
---     "1.7900000011235e+15". Avoid them, or use string.format("%d", n).
+--     "1.7900000011235e+15". This script never converts numbers itself.
 --   * Calling TIME before a write needs effects replication: always on in
---     Redis 7; call redis.replicate_commands() first to support Redis 5 and 6.
+--     Redis 7; redis.replicate_commands() enables it on Redis 5 and 6.
 
-return redis.error_reply(
-  "tower-rate-tier: the GCRA script in src/storage/gcra.lua is not implemented yet"
-)
+-- Every integer below this is exact in a Lua 5.1 number (a double).
+local MAX_EXACT = 2 ^ 53
+
+local function fail(reason)
+  return redis.error_reply("ERR tower-rate-tier: " .. reason)
+end
+
+-- A non-negative integer in the exact range, or nil. tonumber() in Lua 5.1
+-- also accepts "nan", "inf" and fractions, which are all rejected here.
+local function exact_integer(value)
+  local n = tonumber(value)
+  if n == nil or n ~= n or n < 0 or n >= MAX_EXACT or n ~= math.floor(n) then
+    return nil
+  end
+  return n
+end
+
+if #KEYS ~= 1 or #ARGV ~= 4 then
+  return fail("expected 1 key and 4 arguments")
+end
+
+local emission_interval = exact_integer(ARGV[2])
+if emission_interval == nil or emission_interval < 1 then
+  return fail("invalid emission interval")
+end
+local burst_offset = exact_integer(ARGV[3])
+if burst_offset == nil or burst_offset < emission_interval then
+  return fail("invalid burst offset")
+end
+local cost = exact_integer(ARGV[4])
+if cost == nil then
+  return fail("invalid cost")
+end
+
+local now
+if ARGV[1] == "" then
+  if redis.replicate_commands then
+    redis.replicate_commands()
+  end
+  local time = redis.call("TIME")
+  now = exact_integer(time[1] * 1000000 + time[2])
+else
+  now = exact_integer(ARGV[1])
+end
+if now == nil then
+  return fail("invalid time")
+end
+
+-- Not an integer (this includes NaN) means a corrupted value: start fresh.
+local tat = tonumber(redis.call("GET", KEYS[1]))
+if tat == nil or tat ~= math.floor(tat) or tat < now then
+  tat = now
+elseif tat > now + burst_offset then
+  tat = now + burst_offset
+end
+
+local increment = emission_interval * cost
+if increment > MAX_EXACT - tat then
+  return fail("time values exceed the exact range of Lua numbers")
+end
+local new_tat = tat + increment
+local allow_at = new_tat - burst_offset
+
+if allow_at > now then
+  return { 0, 0, allow_at - now, tat - now }
+end
+
+if new_tat > now then
+  redis.call("SET", KEYS[1], new_tat, "PX", math.ceil((new_tat - now) / 1000))
+end
+
+local remaining = math.floor((burst_offset - (new_tat - now)) / emission_interval)
+return { 1, remaining, 0, new_tat - now }

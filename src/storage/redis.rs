@@ -32,6 +32,12 @@ type Reply = (i64, i64, i64, i64);
 /// default) fails with a [`StorageError`], which the
 /// [`OnStorageError`](crate::OnStorageError) policy then handles.
 ///
+/// The script is defensive: every key it writes has an expiry, it touches
+/// only its own key, malformed input is refused without writing (and the
+/// error never includes the key), a corrupted value counts as a fresh bucket
+/// instead of failing every request, and if Redis's clock moves back the wait
+/// is capped at what a full bucket would cost.
+///
 /// The connection can be any [`ConnectionLike`] that is cheap to clone, such
 /// as [`ConnectionManager`] (the default), a `MultiplexedConnection`, or a
 /// cluster connection.
