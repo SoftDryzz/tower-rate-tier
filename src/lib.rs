@@ -1,4 +1,4 @@
-//! Tier-based rate limiting middleware for [`tower`] services.
+//! Tier-based rate limiting middleware for [`tower`](https://docs.rs/tower) services.
 //!
 //! Assign users to named tiers (e.g. "free", "pro") with distinct quotas,
 //! and let the middleware enforce limits automatically via the GCRA algorithm.
