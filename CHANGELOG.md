@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-02
+
 ### Added
 
 - `axum_api_key` example: API keys resolved to tiers with a Redis lookup, limits shared through `RedisStorage`, unknown keys answered with 401 (#30)
@@ -123,3 +125,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Examples: `axum_basic`, `axum_jwt`
 - README with usage guide
 - Dual-licensed under MIT OR Apache-2.0
+
+[Unreleased]: https://github.com/SoftDryzz/tower-rate-tier/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/SoftDryzz/tower-rate-tier/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/SoftDryzz/tower-rate-tier/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/SoftDryzz/tower-rate-tier/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/SoftDryzz/tower-rate-tier/releases/tag/v0.1.0
