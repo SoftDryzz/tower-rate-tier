@@ -14,7 +14,7 @@ Every SaaS API needs rate limiting by user plan (free/pro/enterprise). `tower-ra
 - **Named tiers** — Define `free`, `pro`, `enterprise` (or any names) with distinct quotas
 - **Request cost/weight** — Expensive endpoints consume more quota (`/export` = 20, `/search` = 5)
 - **Async identifier** — Extract `(user_id, tier)` from headers, JWT, API keys, or request body
-- **GCRA algorithm** — Smooth rate enforcement, no burst-at-boundary issues (used by Stripe, GitHub, Shopify)
+- **GCRA algorithm** — Smooth rate enforcement, with no burst at window boundaries
 - **Shared limits across instances** — Redis backend (feature `redis`) with an atomic GCRA script and Redis's own clock
 - **Pluggable storage** — In-memory (DashMap) with automatic GC, Redis, or your own via the `Storage` trait
 - **Safe defaults** — Unknown tiers and unidentified requests never bypass the limit unless you opt in
@@ -256,18 +256,40 @@ Rust 1.75 for the default features and `buffered-body`, and Rust 1.88 with
 `redis` (required by the `redis` crate). The MSRV is only raised in minor
 releases, and every raise is noted in the [changelog](CHANGELOG.md).
 
+## Upgrading from 0.2
+
+0.3 has breaking changes; the [changelog](CHANGELOG.md) lists them all. The
+ones that need code changes:
+
+- `RateLimitInfo` and `RateLimited`: `reset_at` is now `reset_after: Duration`.
+  Use `RateLimited::retry_after_secs()` for a `Retry-After` header.
+- Custom `Storage` backends: `check_and_update` receives a
+  `StorageKey { user_id, tier }` instead of a joined `&str`.
+- `match` on `OnMissing`, `OnStorageError` or `CheckError` needs a `_ =>` arm.
+- Per-route costs under axum's `Router::layer`: use `cost_fn` instead of a
+  route's own `.layer(tier_cost(n))`, which was silently ignored.
+
+Behavior that changed on purpose:
+
+- An unknown tier gets the default tier's quota instead of no limit.
+- `OnMissing::UseDefault` without a default tier answers 403 instead of no
+  limit; use `OnMissing::Allow` to keep the old behavior.
+- A request costing more than the tier's limit gets 403 instead of a 429
+  that could never succeed.
+
 ## Comparison
 
-| Feature | tower-governor | tokio-rate-limit | axum_gcra | **tower-rate-tier** |
-|---------|---------------|-----------------|-----------|-------------------|
-| Named tiers | No | No | No | **Yes** |
-| Request cost/weight | No | No | No | **Yes** |
-| Async identifier | No | Partial | No | **Yes** |
-| Body-based identification | No | No | No | **Yes** |
-| Custom storage | No | No | No | **Yes** |
-| Testable clock | No | Yes | No | **Yes** |
-| Tower-compatible | Yes | Axum only | Axum only | **Yes** |
-| Algorithm | GCRA | Token bucket | GCRA | **GCRA** |
+Checked against each crate's source in October 2026:
+
+| Feature | tower_governor 0.8 | tokio-rate-limit 0.10 | axum_gcra 0.1 | **tower-rate-tier 0.3** |
+|---------|--------------------|-----------------------|---------------|-------------------------|
+| Named tiers (per-plan quotas) | No | No | No | **Yes** |
+| Limits shared across instances | No | No | No | **Yes (Redis)** |
+| Request cost/weight | No | Yes | No | **Yes** |
+| Custom storage backend | No | No | No | **Yes** |
+| Injectable clock for tests | No | Paused Tokio time | Explicit `now` argument | **`FakeClock`** |
+| Frameworks | Tower layer | Axum, Tonic | Axum | **Tower layer (Axum, Hyper)** |
+| Algorithm | GCRA | Token / leaky bucket | GCRA | **GCRA** |
 
 ## License
 
