@@ -52,14 +52,28 @@ API-breaking fixes, dependency cleanup, infrastructure, and storage abstraction.
 
 ## v0.3.0 — Redis & Distributed
 
-Production-ready distributed rate limiting.
+Production-ready distributed rate limiting, plus the correctness and API fixes
+found in a full review of v0.2.0.
 
-- [ ] Redis storage backend (feature-gated: `redis`) (#29)
-- [ ] Atomic GCRA via Lua script (race-condition-free) (#29)
-- [ ] Example: `axum_api_key` with Redis tier lookup (#30)
+- [x] Redis storage backend (feature-gated: `redis`, redis 1.x) (#29)
+- [x] Atomic GCRA via Lua script, with Redis `TIME` as the shared clock (#29)
+- [x] Example: `axum_api_key` with Redis tier lookup (#30)
+- [x] Atomic `MemoryStorage` check-and-update
+- [x] `cost_fn` so per-route costs work behind axum's `Router::layer`
+- [x] `OnUnknownTier`: unknown tiers no longer bypass the limit
+- [x] `on_event` hook (storage errors, unknown tiers, over-limit costs)
+- [x] Relative `reset_after` durations; `Retry-After` rounded up
+- [x] `StorageKey { user_id, tier }` in the `Storage` trait
+- [x] CI: feature matrix, `cargo audit`, Redis service, MSRV per feature
+
+## v0.4.0 — Operations
+
 - [ ] Dynamic tier updates at runtime (#31)
 - [ ] Dashboard-ready metrics export (Prometheus-compatible) (#32)
-- [ ] Tonic/gRPC example and documentation (#33)
+- [ ] Tonic/gRPC support: a response body that works with Tonic, example and docs (#33)
+- [ ] `OnStorageError` fallback to local memory while Redis is down
+- [ ] Circuit breaker so a down Redis does not cost every request its timeout
+- [ ] Redis Cluster tests in CI
 
 ## Future Ideas
 
