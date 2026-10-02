@@ -152,6 +152,11 @@ where
             };
 
             let cost = parts.extensions.get::<TierCost>().map(|c| c.0).unwrap_or(1);
+            if let Some(resp) =
+                check::reject_cost_over_limit(cost, quota, &user_id, &tier_name, &settings)
+            {
+                return Ok(resp.map(Into::into));
+            }
             let now = rate_tier.clock().now();
             let key = StorageKey::new(&user_id, &tier_name);
             let result = rate_tier

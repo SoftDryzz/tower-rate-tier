@@ -251,3 +251,21 @@ async fn users_in_different_tiers_never_share_a_bucket() {
     // Both used to be stored under the same "a:b:c" key.
     assert!(limiter.check("a", "b:c", 1).await.unwrap().is_ok());
 }
+
+#[tokio::test]
+async fn cost_above_the_tier_limit_is_an_error() {
+    let limiter = RateTier::builder()
+        .tier("free", Quota::per_second(5))
+        .clock(FakeClock::new())
+        .build();
+
+    match limiter.check("u1", "free", 6).await {
+        Err(tower_rate_tier::CheckError::CostExceedsLimit { cost, limit }) => {
+            assert_eq!((cost, limit), (6, 5));
+        }
+        other => panic!("expected CostExceedsLimit, got {other:?}"),
+    }
+    // Nothing was consumed: the full burst is still available.
+    let info = limiter.check("u1", "free", 5).await.unwrap().unwrap();
+    assert_eq!(info.remaining, 0);
+}

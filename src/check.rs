@@ -62,6 +62,34 @@ pub(crate) fn resolve_quota<'a>(
     }
 }
 
+/// Reject a request whose cost is above the tier's maximum burst.
+///
+/// Such a request can never be allowed, so it is answered with 403 before
+/// storage is touched. Returns `None` when the request may proceed.
+pub(crate) fn reject_cost_over_limit(
+    cost: u32,
+    quota: &Quota,
+    user_id: &str,
+    tier_name: &str,
+    settings: &Settings,
+) -> Option<Response<String>> {
+    let limit = quota.max_burst();
+    if cost <= limit {
+        return None;
+    }
+    if let Some(cb) = &settings.on_event {
+        cb(&LimitEvent::CostExceedsLimit {
+            user_id,
+            tier: tier_name,
+            cost,
+            limit,
+        });
+    }
+    Some(response::cost_exceeds_limit_response(
+        tier_name, cost, limit,
+    ))
+}
+
 /// Process the storage result into a `CheckOutcome`.
 pub(crate) fn process_result(
     result: Result<Result<RateLimitInfo, crate::gcra::RateLimited>, crate::storage::StorageError>,

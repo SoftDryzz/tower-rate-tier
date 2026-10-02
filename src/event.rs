@@ -18,4 +18,16 @@ pub enum LimitEvent<'a> {
         /// The error returned by the backend.
         error: &'a StorageError,
     },
+    /// A request cost more than the tier allows in a whole window, so it was
+    /// rejected without touching storage.
+    CostExceedsLimit {
+        /// The identified user.
+        user_id: &'a str,
+        /// The tier whose quota applied.
+        tier: &'a str,
+        /// The cost of the rejected request.
+        cost: u32,
+        /// The tier's maximum burst.
+        limit: u32,
+    },
 }

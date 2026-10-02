@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - `Debug` implementations for all public types (`MemoryStorage` shows only its entry count, never user keys)
 - `TierLimitLayer::on_event()` callback and `LimitEvent` enum, starting with `LimitEvent::StorageError`, so storage failures are visible even when the request fails open
+- `CheckError::CostExceedsLimit` and `LimitEvent::CostExceedsLimit` for requests that cost more than the tier's maximum burst
 - `TierLimitLayer::new()` also accepts an `Arc<RateTier>`, so the middleware and programmatic `RateTier::check()` calls can share one set of limits
 
 ### Changed
@@ -25,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- A request costing more than the tier's maximum burst was answered with 429 and a `Retry-After` that never helped. It is now rejected without touching storage: the middleware answers 403 Forbidden with no `Retry-After`, and `RateTier::check()` returns `CheckError::CostExceedsLimit`
 - A user in one tier could share a bucket with another user in another tier when the names contained `:` (user `a:b` in tier `c` and user `a` in tier `b:c` were both stored as `a:b:c`)
 - `X-RateLimit-Reset` on a 429 counted the rejected request, so it reported the reset one emission interval (times the request cost) too late
 - `Retry-After` was rounded down, so a client that waited exactly that long was rejected again. It is now rounded up, and the JSON body's `retry_after` always matches the header

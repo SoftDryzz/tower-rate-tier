@@ -22,6 +22,14 @@ pub enum CheckError {
     UnknownTier(String),
     /// The storage backend failed during the rate limit check.
     Storage(StorageError),
+    /// The request costs more than the tier allows in a whole window, so it
+    /// can never be allowed. Nothing was consumed.
+    CostExceedsLimit {
+        /// The cost of the rejected request.
+        cost: u32,
+        /// The tier's maximum burst.
+        limit: u32,
+    },
 }
 
 impl fmt::Display for CheckError {
@@ -29,6 +37,13 @@ impl fmt::Display for CheckError {
         match self {
             CheckError::UnknownTier(name) => write!(f, "unknown tier: {}", name),
             CheckError::Storage(err) => write!(f, "{}", err),
+            CheckError::CostExceedsLimit { cost, limit } => {
+                write!(
+                    f,
+                    "request cost {} exceeds the tier limit of {}",
+                    cost, limit
+                )
+            }
         }
     }
 }
@@ -36,7 +51,7 @@ impl fmt::Display for CheckError {
 impl std::error::Error for CheckError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            CheckError::UnknownTier(_) => None,
+            CheckError::UnknownTier(_) | CheckError::CostExceedsLimit { .. } => None,
             CheckError::Storage(err) => Some(err),
         }
     }
@@ -158,6 +173,8 @@ impl RateTier {
     ///
     /// - [`CheckError::UnknownTier`] — the tier name does not exist in the configured tiers.
     /// - [`CheckError::Storage`] — the storage backend failed (e.g., Redis connection lost).
+    /// - [`CheckError::CostExceedsLimit`] — `cost` is above the tier's maximum
+    ///   burst, so the request could never be allowed.
     pub async fn check(
         &self,
         user_id: &str,
@@ -175,6 +192,13 @@ impl RateTier {
                 remaining: 0,
                 reset_after: Duration::ZERO,
             }));
+        }
+
+        if cost > quota.max_burst() {
+            return Err(CheckError::CostExceedsLimit {
+                cost,
+                limit: quota.max_burst(),
+            });
         }
 
         let now = self.clock.now();

@@ -40,6 +40,9 @@ pub struct RateLimited {
 /// * `burst_offset` - Maximum burst window (emission_interval * max_burst).
 /// * `cost` - Number of cells this request consumes. A cost of `0` means the
 ///   request is free (no quota consumed) and is always allowed.
+///   A cost above the maximum burst is never allowed; [`RateTier`](crate::RateTier)
+///   rejects it with [`CheckError::CostExceedsLimit`](crate::CheckError::CostExceedsLimit)
+///   before storage is reached.
 ///
 /// # Returns
 ///

@@ -408,3 +408,33 @@ async fn storage_error_is_reported_and_fails_open_by_default() {
     assert!(!resp.headers().contains_key("x-ratelimit-limit"));
     assert_eq!(events.lock().unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn cost_above_the_tier_limit_is_forbidden_without_retry_after() {
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = events.clone();
+    let mut svc = make_layer(FakeClock::new())
+        .on_event(move |event| {
+            if let tower_rate_tier::LimitEvent::CostExceedsLimit {
+                tier, cost, limit, ..
+            } = event
+            {
+                seen.lock()
+                    .unwrap()
+                    .push(format!("{tier}: {cost} > {limit}"));
+            }
+        })
+        .layer(OkService);
+
+    // free allows 2/sec, so a request costing 3 can never pass.
+    let resp = svc.call(build_request_with_cost("user1", 3)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert!(!resp.headers().contains_key("retry-after"));
+    assert!(resp.body().contains(r#""cost":3"#), "{}", resp.body());
+    assert_eq!(*events.lock().unwrap(), ["free: 3 > 2"]);
+
+    // The rejected request consumed nothing.
+    let resp = svc.call(build_request(Some("user1"))).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers()["x-ratelimit-remaining"], "1");
+}

@@ -268,3 +268,15 @@ async fn body_read_error_returns_400() {
     let resp = svc.call(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn cost_above_the_tier_limit_is_forbidden() {
+    let mut svc = make_buffered_layer(FakeClock::new()).layer(EchoService);
+
+    // free allows 2/sec, so a request costing 3 can never pass.
+    let mut req = json_request(r#"{"user_id": "alice"}"#);
+    req.extensions_mut().insert(tower_rate_tier::TierCost(3));
+    let resp = svc.call(req).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}

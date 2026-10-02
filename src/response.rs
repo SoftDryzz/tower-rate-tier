@@ -51,6 +51,22 @@ pub fn rate_limited_response(
         .unwrap()
 }
 
+/// Build a 403 Forbidden response for a request that costs more than the
+/// tier allows in a whole window. It has no `Retry-After`: waiting never helps.
+pub fn cost_exceeds_limit_response(tier: &str, cost: u32, limit: u32) -> Response<String> {
+    let body = format!(
+        r#"{{"error":"request cost exceeds tier limit","tier":"{}","cost":{},"limit":{}}}"#,
+        escape_json_string(tier),
+        cost,
+        limit
+    );
+    Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .header("Content-Type", "application/json")
+        .body(body)
+        .unwrap()
+}
+
 /// Build a response for when the identifier cannot determine the user/tier
 /// and the policy is `OnMissing::Deny(status)`.
 pub fn deny_response(status: StatusCode) -> Response<String> {
