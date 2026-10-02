@@ -235,8 +235,11 @@ async fn gc_cleans_expired_entries() {
         Duration::from_millis(50),
     );
 
-    // Advance the rate-limit clock past expiry, then Tokio's paused clock to
-    // the next GC tick, and let the GC task run.
+    // The first tick fires at once, while the entry is still live.
+    tokio::task::yield_now().await;
+    assert_eq!(storage.len(), 1);
+
+    // Expire the entry, then move Tokio's paused clock to the second tick.
     clock.advance(Duration::from_secs(10));
     tokio::time::advance(Duration::from_millis(50)).await;
     tokio::task::yield_now().await;
