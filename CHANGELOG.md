@@ -4,6 +4,57 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+
+- `axum_api_key` example: API keys resolved to tiers with a Redis lookup, limits shared through `RedisStorage`, unknown keys answered with 401 (#30)
+- `RedisStorage::key_secret()` hashes user ids with HMAC-SHA1 under a secret, so ids with little entropy (IP addresses, emails) cannot be recovered from Redis keys
+- `RedisStorage` (feature `redis`) for several instances sharing one rate limit (#29): an atomic GCRA Lua script run with `EVALSHA` and reloaded after `NOSCRIPT`, Redis's `TIME` as the shared clock, keys `trt:<tier>:<sha1(user_id)>` that expire exactly when the bucket is full again, a 100 ms timeout, and any `ConnectionLike` (`ConnectionManager` by default, cluster connections too). The script validates its input, never writes a key without an expiry or touches other keys, keeps user ids out of error messages, heals corrupted values and caps the wait if Redis's clock moves back
+- `Debug` implementations for all public types (`MemoryStorage` shows only its entry count, never user keys)
+- `RateLimited::retry_after_secs()` rounds the wait up to whole seconds for a `Retry-After` header; the custom 429 examples use it
+- `TierLimitLayer::cost_fn()` computes each request's cost inside the middleware from its method, URI, headers and extensions (including axum's `MatchedPath`)
+- `TierLimitLayer::on_event()` callback and `LimitEvent` enum, starting with `LimitEvent::StorageError`, so storage failures are visible even when the request fails open
+- `OnUnknownTier` policy (`RateTierBuilder::on_unknown_tier()`) and `LimitEvent::UnknownTier` for tiers that are not configured
+- `CheckError::CostExceedsLimit` and `LimitEvent::CostExceedsLimit` for requests that cost more than the tier's maximum burst
+- `TierLimitLayer::new()` also accepts an `Arc<RateTier>`, so the middleware and programmatic `RateTier::check()` calls can share one set of limits
+
+### Changed
+
+- **Breaking:** the `redis` feature uses redis 1.x (it pulled in 0.27 before without using it) and needs Rust 1.88. Without it, the MSRV stays 1.75
+- **Breaking:** `OnMissing`, `OnStorageError` and `CheckError` are `#[non_exhaustive]`, so new variants can be added without another breaking release. The new `LimitEvent` variants and `CheckError::CostExceedsLimit` are `#[non_exhaustive]` too, so their fields must be matched with `..`
+- **Breaking:** `RateLimitInfo` and `RateLimited` report `reset_after: Duration` (time until the quota fully replenishes) instead of an absolute `reset_at: Nanos`, so results no longer depend on the storage backend's clock. Both now derive `PartialEq` and `Eq`
+- **Breaking:** `Storage::check_and_update()` takes a `StorageKey { user_id, tier }` instead of a pre-joined `&str`, and the key, quota and returned future share one lifetime so async backends can borrow them
+- **Breaking:** `OnMissing::UseDefault` (the default policy) without a default tier now denies unidentified requests with 403 Forbidden, like `OnUnknownTier`, instead of letting them through unlimited. Use `OnMissing::Allow` for the old behavior
+- **Breaking:** `Clock::unix_offset_nanos()` is removed and `SystemClock` is purely monotonic. `response::inject_headers()` and `response::rate_limited_response()` take the wall-clock `now: SystemTime` instead of a Unix offset
+
+### Removed
+
+- Unused `tower` and `pin-project-lite` dependencies
+
+### Fixed
+
+- The README and the `axum_basic` example set per-route costs with a route's own `.layer(tier_cost(n))` under a limiter added with `Router::layer`. That layer runs after the limiter, so the cost was silently ignored and every request cost 1. They now use `cost_fn`, and the `tier_cost` docs explain the order it needs
+- A request costing more than the tier's maximum burst was answered with 429 and a `Retry-After` that never helped. It is now rejected without touching storage: the middleware answers 403 Forbidden with no `Retry-After`, and `RateTier::check()` returns `CheckError::CostExceedsLimit`
+- A user in one tier could share a bucket with another user in another tier when the names contained `:` (user `a:b` in tier `c` and user `a` in tier `b:c` were both stored as `a:b:c`)
+- `X-RateLimit-Reset` is 0, not `u64::MAX`, if the system clock is set before the Unix epoch
+- `X-RateLimit-Reset` on a 429 counted the rejected request, so it reported the reset one emission interval (times the request cost) too late
+- `Retry-After` was rounded down, so a client that waited exactly that long was rejected again. It is now rounded up, and the JSON body's `retry_after` always matches the header
+- `MemoryStorage` let concurrent requests for the same key exceed the quota, because the check and the update were not atomic
+- GCRA overflow with very large costs: it panicked in debug builds, and in release builds it allowed the request and reset the user's state
+- `max_body_size` buffered the whole request body before checking its size; it now rejects bodies whose declared length is over the limit without reading them, and stops reading at the first chunk that crosses the limit
+- `RateTierBuilder::build()` panicked outside a Tokio runtime. The garbage collector still starts at build time inside a runtime; otherwise it starts on the first use of the storage inside one
+- A zero GC interval silently killed the garbage collector task; `gc_interval(Duration::ZERO)` and `GcHandle::spawn` now panic instead
+- `RateTierBuilder::storage()` docs claimed `gc_interval()` re-enables garbage collection for custom backends
+- Quotas faster than one request per nanosecond (e.g. `Quota::per_second(2_000_000_000)`) now panic when built instead of panicking with a division by zero on every check
+- docs.rs now builds with all features, so `buffered-body` items are documented
+- `TierLimitLayer` docs and example were attached to the `OnLimitedFn` alias
+- `identify_with_body` docs referenced a nonexistent `buffer_body(true)` signature
+
+### Security
+
+- A tier name the middleware did not know (a typo, a new plan, or a value a client could influence, such as a header) let the request through with no rate limit at all. By default it now gets the default tier's quota in the user's own bucket, or 403 Forbidden when no default tier is set; `OnUnknownTier` can choose `Deny` or an explicit `Allow`
+
 ## [0.2.0] - 2026-03-17
 
 ### Breaking Changes

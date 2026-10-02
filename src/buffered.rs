@@ -2,20 +2,19 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::SystemTime;
 
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
 use http_body::Body;
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
 use tower_layer::Layer;
 use tower_service::Service;
 
 use crate::check::{self, CheckOutcome};
-use crate::cost::TierCost;
-use crate::identifier::TierIdentifier;
-use crate::layer::{OnLimitedFn, RateLimitedResponseFn};
-use crate::on_storage_error::OnStorageError;
+use crate::layer::Settings;
 use crate::response;
+use crate::storage::StorageKey;
 use crate::tier::RateTier;
 
 /// Tower layer for tier-based rate limiting with body-based identification.
@@ -24,20 +23,22 @@ use crate::tier::RateTier;
 /// on a [`TierLimitLayer`](crate::TierLimitLayer).
 ///
 /// This layer buffers the request body before identification, enabling
-/// [`TierIdentifier::identify_with_body`] to inspect the body contents.
+/// [`TierIdentifier::identify_with_body`](crate::TierIdentifier::identify_with_body)
+/// to inspect the body contents.
 /// The body is then reconstructed as `Full<Bytes>` for the downstream service.
 ///
 /// # Body size limit
 ///
 /// Requests exceeding [`max_body_size`](Self::max_body_size) (default: 64KB)
-/// are immediately rejected with 413 Payload Too Large.
-#[derive(Clone)]
+/// are rejected with 413 Payload Too Large. A body whose declared length
+/// (e.g. `Content-Length`) is over the limit is rejected without being read;
+/// otherwise reading stops at the first chunk that crosses the limit.
+///
+/// Requires the `buffered-body` feature.
+#[derive(Clone, Debug)]
 pub struct BufferedTierLimitLayer {
     pub(crate) rate_tier: Arc<RateTier>,
-    pub(crate) identifier: Arc<dyn TierIdentifier>,
-    pub(crate) on_storage_error: OnStorageError,
-    pub(crate) on_limited: Option<Arc<OnLimitedFn>>,
-    pub(crate) rate_limited_response: Option<Arc<RateLimitedResponseFn>>,
+    pub(crate) settings: Settings,
     pub(crate) max_body_size: usize,
 }
 
@@ -59,10 +60,7 @@ impl<S> Layer<S> for BufferedTierLimitLayer {
         BufferedTierLimitService {
             inner,
             rate_tier: self.rate_tier.clone(),
-            identifier: self.identifier.clone(),
-            on_storage_error: self.on_storage_error,
-            on_limited: self.on_limited.clone(),
-            rate_limited_response: self.rate_limited_response.clone(),
+            settings: Arc::new(self.settings.clone()),
             max_body_size: self.max_body_size,
         }
     }
@@ -71,28 +69,14 @@ impl<S> Layer<S> for BufferedTierLimitLayer {
 /// Tower service that buffers the request body for identification.
 ///
 /// Created by [`BufferedTierLimitLayer`].
+///
+/// Requires the `buffered-body` feature.
+#[derive(Clone, Debug)]
 pub struct BufferedTierLimitService<S> {
     inner: S,
     rate_tier: Arc<RateTier>,
-    identifier: Arc<dyn TierIdentifier>,
-    on_storage_error: OnStorageError,
-    on_limited: Option<Arc<OnLimitedFn>>,
-    rate_limited_response: Option<Arc<RateLimitedResponseFn>>,
+    settings: Arc<Settings>,
     max_body_size: usize,
-}
-
-impl<S: Clone> Clone for BufferedTierLimitService<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            rate_tier: self.rate_tier.clone(),
-            identifier: self.identifier.clone(),
-            on_storage_error: self.on_storage_error,
-            on_limited: self.on_limited.clone(),
-            rate_limited_response: self.rate_limited_response.clone(),
-            max_body_size: self.max_body_size,
-        }
-    }
 }
 
 impl<S, B, ResBody> Service<Request<B>> for BufferedTierLimitService<S>
@@ -115,10 +99,7 @@ where
 
     fn call(&mut self, req: Request<B>) -> Self::Future {
         let rate_tier = self.rate_tier.clone();
-        let identifier = self.identifier.clone();
-        let on_storage_error = self.on_storage_error;
-        let on_limited = self.on_limited.clone();
-        let rate_limited_response_fn = self.rate_limited_response.clone();
+        let settings = self.settings.clone();
         let max_body_size = self.max_body_size;
         let mut inner = self.inner.clone();
         std::mem::swap(&mut self.inner, &mut inner);
@@ -127,14 +108,17 @@ where
             // Split request to buffer body separately
             let (parts, body) = req.into_parts();
 
-            // Collect the body
-            let body_bytes = match body.collect().await {
-                Ok(collected) => {
-                    let bytes = collected.to_bytes();
-                    if bytes.len() > max_body_size {
-                        return Ok(payload_too_large_response().map(Into::into));
-                    }
-                    bytes
+            // A body that already declares more than the limit is never read.
+            if body.size_hint().lower() > max_body_size as u64 {
+                return Ok(payload_too_large_response().map(Into::into));
+            }
+
+            // `Limited` fails on the first frame that crosses the limit, so at
+            // most `max_body_size` bytes (plus that frame) are ever buffered.
+            let body_bytes = match Limited::new(body, max_body_size).collect().await {
+                Ok(collected) => collected.to_bytes(),
+                Err(err) if err.is::<LengthLimitError>() => {
+                    return Ok(payload_too_large_response().map(Into::into));
                 }
                 Err(_) => {
                     return Ok(response::bad_request_response().map(Into::into));
@@ -142,7 +126,8 @@ where
             };
 
             // Identify using headers + body
-            let identity = identifier
+            let identity = settings
+                .identifier
                 .identify_with_body(&parts.headers, &body_bytes)
                 .await;
 
@@ -156,38 +141,39 @@ where
                 Err(CheckOutcome::Allow(_)) => unreachable!(),
             };
 
-            let quota = match check::resolve_quota(&rate_tier, &tier_name) {
-                Ok(q) => q,
+            let resolved = check::resolve_quota(&rate_tier, &user_id, tier_name, &settings);
+            let (tier_name, quota) = match resolved {
+                Ok(resolved) => resolved,
                 Err(CheckOutcome::PassThrough) => {
                     let req = Request::from_parts(parts, Full::new(body_bytes));
                     return inner.call(req).await;
                 }
-                Err(_) => unreachable!(),
+                Err(CheckOutcome::Deny(resp)) => return Ok(resp.map(Into::into)),
+                Err(CheckOutcome::Allow(_)) => unreachable!(),
             };
 
-            let cost = parts.extensions.get::<TierCost>().map(|c| c.0).unwrap_or(1);
+            let cost = check::request_cost(&parts, &settings);
+            if let Some(resp) =
+                check::reject_cost_over_limit(cost, quota, &user_id, &tier_name, &settings)
+            {
+                return Ok(resp.map(Into::into));
+            }
             let now = rate_tier.clock().now();
-            let storage_key = format!("{}:{}", user_id, tier_name);
+            let key = StorageKey::new(&user_id, &tier_name);
             let result = rate_tier
                 .storage()
-                .check_and_update(&storage_key, quota, cost, now)
+                .check_and_update(key, quota, cost, now)
                 .await;
 
-            let unix_offset = rate_tier.clock().unix_offset_nanos();
+            // Wall-clock time of the check; the durations in the result are
+            // relative to it.
+            let checked_at = SystemTime::now();
 
-            match check::process_result(
-                result,
-                &user_id,
-                &tier_name,
-                on_storage_error,
-                &on_limited,
-                &rate_limited_response_fn,
-                unix_offset,
-            ) {
+            match check::process_result(result, &user_id, &tier_name, &settings, checked_at) {
                 CheckOutcome::Allow(info) => {
                     let req = Request::from_parts(parts, Full::new(body_bytes));
                     let mut resp = inner.call(req).await?;
-                    response::inject_headers(&mut resp, &info, unix_offset);
+                    response::inject_headers(&mut resp, &info, checked_at);
                     Ok(resp)
                 }
                 CheckOutcome::Deny(resp) => Ok(resp.map(Into::into)),

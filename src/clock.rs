@@ -9,44 +9,27 @@ use crate::quota::Nanos;
 /// Implementations must be thread-safe (`Send + Sync`).
 pub trait Clock: Send + Sync + 'static {
     /// Returns the current time in nanoseconds since an arbitrary epoch.
+    ///
+    /// Only differences between values matter. The epoch is local to the
+    /// clock, so storage shared between processes must not compare values
+    /// from different clocks; use the backend's own time instead.
     fn now(&self) -> Nanos;
-
-    /// Returns the Unix timestamp offset in nanoseconds.
-    ///
-    /// This offset, when added to a value from [`now()`](Clock::now), produces
-    /// a nanosecond-precision Unix timestamp. Used by the response layer to emit
-    /// `X-RateLimit-Reset` as a standard Unix timestamp.
-    ///
-    /// Default returns `0`, which is suitable for testing with [`FakeClock`].
-    fn unix_offset_nanos(&self) -> u64 {
-        0
-    }
 }
 
 /// Real clock backed by `tokio::time::Instant`.
 ///
-/// Uses a fixed epoch (created at construction time) and measures elapsed
-/// nanoseconds from that point. The Unix offset is captured at construction
-/// so that internal timestamps can be converted to Unix timestamps for
-/// HTTP headers.
+/// Monotonic: measures nanoseconds elapsed since the clock was created, so it
+/// never jumps when the system's wall clock is adjusted.
+#[derive(Debug)]
 pub struct SystemClock {
     epoch: tokio::time::Instant,
-    unix_offset: u64,
 }
 
 impl SystemClock {
     /// Creates a new `SystemClock` with the current instant as its epoch.
-    ///
-    /// Captures the current Unix time so that elapsed values can be converted
-    /// to Unix timestamps via [`unix_offset_nanos()`](Clock::unix_offset_nanos).
     pub fn new() -> Self {
-        let unix_nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time before Unix epoch")
-            .as_nanos() as u64;
         Self {
             epoch: tokio::time::Instant::now(),
-            unix_offset: unix_nanos,
         }
     }
 }
@@ -60,10 +43,6 @@ impl Default for SystemClock {
 impl Clock for SystemClock {
     fn now(&self) -> Nanos {
         self.epoch.elapsed().as_nanos() as Nanos
-    }
-
-    fn unix_offset_nanos(&self) -> u64 {
-        self.unix_offset
     }
 }
 
@@ -84,7 +63,7 @@ impl Clock for SystemClock {
 /// clock.advance(Duration::from_secs(60));
 /// assert_eq!(clock.now(), 60_000_000_000);
 /// ```
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FakeClock {
     nanos: Arc<AtomicU64>,
 }
@@ -102,11 +81,21 @@ impl FakeClock {
     /// Saturates at `u64::MAX` if the total would overflow.
     pub fn advance(&self, duration: Duration) {
         let delta = duration.as_nanos().min(u64::MAX as u128) as u64;
-        let _ = self
-            .nanos
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-                Some(current.saturating_add(delta))
-            });
+        // A compare-exchange loop: `fetch_update` is deprecated since Rust
+        // 1.99 and its replacement does not exist on the 1.75 MSRV.
+        let mut current = self.nanos.load(Ordering::SeqCst);
+        loop {
+            let next = current.saturating_add(delta);
+            match self.nanos.compare_exchange_weak(
+                current,
+                next,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return,
+                Err(actual) => current = actual,
+            }
+        }
     }
 
     /// Set the clock to an absolute nanosecond value.
@@ -171,14 +160,15 @@ mod tests {
     fn system_clock_monotonic() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_time()
+            .start_paused(true)
             .build()
             .unwrap();
         rt.block_on(async {
             let clock = SystemClock::new();
             let t0 = clock.now();
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::advance(Duration::from_millis(10)).await;
             let t1 = clock.now();
-            assert!(t1 > t0);
+            assert_eq!(t1 - t0, 10_000_000);
         });
     }
 }

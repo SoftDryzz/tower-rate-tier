@@ -157,6 +157,42 @@ fn stale_tat_resets_to_now() {
 }
 
 #[test]
+fn allowed_reset_after_is_time_until_full_replenish() {
+    let q = Quota::per_hour(10);
+    let (ei, bo) = quota_params(&q);
+
+    let (_, info) = check_gcra(None, 0, ei, bo, 1).unwrap();
+    assert_eq!(info.reset_after, Duration::from_secs(360));
+}
+
+#[test]
+fn denied_reset_after_does_not_count_the_rejected_request() {
+    let q = Quota::per_hour(10);
+    let (ei, bo) = quota_params(&q);
+    let mut tat = None;
+    for _ in 0..10 {
+        tat = Some(check_gcra(tat, 0, ei, bo, 1).unwrap().0);
+    }
+
+    let limited = check_gcra(tat, 0, ei, bo, 1).unwrap_err();
+    assert_eq!(limited.retry_after, Duration::from_secs(360));
+    // Full replenish is when the stored TAT is reached, not one interval later.
+    assert_eq!(limited.reset_after, Duration::from_secs(3600));
+}
+
+#[test]
+fn huge_cost_is_denied_instead_of_overflowing() {
+    // emission_interval * cost saturates to u64::MAX; adding it to `now`
+    // used to overflow (panic in debug, wrap-around and allow in release).
+    let q = Quota::per_day(1);
+    let (ei, bo) = quota_params(&q);
+    let now = 1_000_000_000;
+
+    let result = check_gcra(None, now, ei, bo, 300_000);
+    assert!(result.is_err(), "a cost far above the quota must be denied");
+}
+
+#[test]
 fn cost_zero_allowed_without_consuming() {
     let q = Quota::per_second(5);
     let (ei, bo) = quota_params(&q);
@@ -164,4 +200,20 @@ fn cost_zero_allowed_without_consuming() {
 
     let (_, info) = check_gcra(None, now, ei, bo, 0).unwrap();
     assert_eq!(info.remaining, 5);
+}
+
+#[test]
+fn retry_after_secs_rounds_up() {
+    let limited = |retry_after| tower_rate_tier::RateLimited {
+        limit: 1,
+        retry_after,
+        reset_after: Duration::from_secs(60),
+    };
+
+    assert_eq!(
+        limited(Duration::from_millis(29_500)).retry_after_secs(),
+        30
+    );
+    assert_eq!(limited(Duration::from_millis(1)).retry_after_secs(), 1);
+    assert_eq!(limited(Duration::from_secs(30)).retry_after_secs(), 30);
 }

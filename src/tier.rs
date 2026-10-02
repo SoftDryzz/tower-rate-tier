@@ -1,26 +1,37 @@
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use crate::clock::{Clock, SystemClock};
 use crate::gc::GcHandle;
 use crate::gcra::{RateLimitInfo, RateLimited};
 use crate::on_missing::OnMissing;
+use crate::on_unknown_tier::OnUnknownTier;
 use crate::quota::Quota;
 use crate::storage::memory::MemoryStorage;
-use crate::storage::{Storage, StorageError};
+use crate::storage::{Storage, StorageError, StorageKey};
 
 /// Error returned by [`RateTier::check()`].
 ///
 /// Distinguishes between an unknown tier name (a configuration/logic error)
 /// and a storage backend failure (e.g., Redis connection lost).
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum CheckError {
     /// The tier name passed to `check()` does not exist in the configured tiers.
     UnknownTier(String),
     /// The storage backend failed during the rate limit check.
     Storage(StorageError),
+    /// The request costs more than the tier allows in a whole window, so it
+    /// can never be allowed. Nothing was consumed.
+    #[non_exhaustive]
+    CostExceedsLimit {
+        /// The cost of the rejected request.
+        cost: u32,
+        /// The tier's maximum burst.
+        limit: u32,
+    },
 }
 
 impl fmt::Display for CheckError {
@@ -28,6 +39,13 @@ impl fmt::Display for CheckError {
         match self {
             CheckError::UnknownTier(name) => write!(f, "unknown tier: {}", name),
             CheckError::Storage(err) => write!(f, "{}", err),
+            CheckError::CostExceedsLimit { cost, limit } => {
+                write!(
+                    f,
+                    "request cost {} exceeds the tier limit of {}",
+                    cost, limit
+                )
+            }
         }
     }
 }
@@ -35,7 +53,7 @@ impl fmt::Display for CheckError {
 impl std::error::Error for CheckError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            CheckError::UnknownTier(_) => None,
+            CheckError::UnknownTier(_) | CheckError::CostExceedsLimit { .. } => None,
             CheckError::Storage(err) => Some(err),
         }
     }
@@ -70,9 +88,45 @@ pub struct RateTier {
     tiers: HashMap<String, Quota>,
     default_tier: Option<String>,
     on_missing: OnMissing,
+    on_unknown_tier: OnUnknownTier,
     storage: Arc<dyn Storage>,
     clock: Arc<dyn Clock>,
-    _gc: Option<GcHandle>,
+    gc: Option<LazyGc>,
+}
+
+/// Garbage collector for the built-in `MemoryStorage`.
+///
+/// The task needs a Tokio runtime, so it is spawned by `build()` when one is
+/// available and otherwise by the first use of the storage inside one.
+struct LazyGc {
+    storage: Arc<MemoryStorage>,
+    interval: Duration,
+    handle: OnceLock<GcHandle>,
+}
+
+impl LazyGc {
+    /// Spawn the GC task once, if a Tokio runtime is available here.
+    ///
+    /// Without a runtime this does nothing, and a later call tries again.
+    fn ensure_started(&self, clock: &Arc<dyn Clock>) {
+        if self.handle.get().is_none() && tokio::runtime::Handle::try_current().is_ok() {
+            self.handle.get_or_init(|| {
+                GcHandle::spawn(self.storage.clone(), clock.clone(), self.interval)
+            });
+        }
+    }
+}
+
+impl fmt::Debug for RateTier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RateTier")
+            .field("tiers", &self.tiers)
+            .field("default_tier", &self.default_tier)
+            .field("on_missing", &self.on_missing)
+            .field("on_unknown_tier", &self.on_unknown_tier)
+            .field("gc_enabled", &self.gc.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl RateTier {
@@ -91,6 +145,11 @@ impl RateTier {
         self.on_missing
     }
 
+    /// Get the policy for tiers that are not configured.
+    pub fn on_unknown_tier(&self) -> OnUnknownTier {
+        self.on_unknown_tier
+    }
+
     /// Get the default tier name, if set.
     pub fn default_tier(&self) -> Option<&str> {
         self.default_tier.as_deref()
@@ -102,7 +161,14 @@ impl RateTier {
     }
 
     /// Get a reference to the storage backend.
+    ///
+    /// Also starts the garbage collector of the built-in storage if it is not
+    /// running yet and a Tokio runtime is available (see
+    /// [`RateTierBuilder::build`]).
     pub fn storage(&self) -> &dyn Storage {
+        if let Some(gc) = &self.gc {
+            gc.ensure_started(&self.clock);
+        }
         self.storage.as_ref()
     }
 
@@ -116,6 +182,8 @@ impl RateTier {
     ///
     /// - [`CheckError::UnknownTier`] — the tier name does not exist in the configured tiers.
     /// - [`CheckError::Storage`] — the storage backend failed (e.g., Redis connection lost).
+    /// - [`CheckError::CostExceedsLimit`] — `cost` is above the tier's maximum
+    ///   burst, so the request could never be allowed.
     pub async fn check(
         &self,
         user_id: &str,
@@ -131,15 +199,22 @@ impl RateTier {
             return Ok(Ok(RateLimitInfo {
                 limit: 0,
                 remaining: 0,
-                reset_at: 0,
+                reset_after: Duration::ZERO,
             }));
         }
 
+        if cost > quota.max_burst() {
+            return Err(CheckError::CostExceedsLimit {
+                cost,
+                limit: quota.max_burst(),
+            });
+        }
+
         let now = self.clock.now();
-        let storage_key = format!("{}:{}", user_id, tier_name);
+        let key = StorageKey::new(user_id, tier_name);
         Ok(self
-            .storage
-            .check_and_update(&storage_key, quota, cost, now)
+            .storage()
+            .check_and_update(key, quota, cost, now)
             .await?)
     }
 }
@@ -149,6 +224,7 @@ pub struct RateTierBuilder {
     tiers: HashMap<String, Quota>,
     default_tier: Option<String>,
     on_missing: OnMissing,
+    on_unknown_tier: OnUnknownTier,
     clock: Option<Arc<dyn Clock>>,
     storage: Option<Arc<dyn Storage>>,
     gc_interval: Duration,
@@ -161,11 +237,27 @@ impl Default for RateTierBuilder {
             tiers: HashMap::new(),
             default_tier: None,
             on_missing: OnMissing::default(),
+            on_unknown_tier: OnUnknownTier::default(),
             clock: None,
             storage: None,
             gc_interval: Duration::from_secs(60),
             gc_enabled: true,
         }
+    }
+}
+
+impl fmt::Debug for RateTierBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RateTierBuilder")
+            .field("tiers", &self.tiers)
+            .field("default_tier", &self.default_tier)
+            .field("on_missing", &self.on_missing)
+            .field("on_unknown_tier", &self.on_unknown_tier)
+            .field("custom_clock", &self.clock.is_some())
+            .field("custom_storage", &self.storage.is_some())
+            .field("gc_interval", &self.gc_interval)
+            .field("gc_enabled", &self.gc_enabled)
+            .finish()
     }
 }
 
@@ -176,7 +268,11 @@ impl RateTierBuilder {
         self
     }
 
-    /// Set the default tier name (used when `OnMissing::UseDefault`).
+    /// Set the default tier name.
+    ///
+    /// Used by [`OnMissing::UseDefault`] for unidentified requests and by
+    /// [`OnUnknownTier::UseDefault`] for tiers that are not configured.
+    /// Without one, `OnUnknownTier::UseDefault` answers 403.
     pub fn default_tier(mut self, name: impl Into<String>) -> Self {
         self.default_tier = Some(name.into());
         self
@@ -188,6 +284,13 @@ impl RateTierBuilder {
         self
     }
 
+    /// Set the behavior when the identifier returns a tier that is not
+    /// configured. Default: [`OnUnknownTier::UseDefault`].
+    pub fn on_unknown_tier(mut self, policy: OnUnknownTier) -> Self {
+        self.on_unknown_tier = policy;
+        self
+    }
+
     /// Set a custom clock (useful for testing with `FakeClock`).
     pub fn clock(mut self, clock: impl Clock) -> Self {
         self.clock = Some(Arc::new(clock));
@@ -196,10 +299,11 @@ impl RateTierBuilder {
 
     /// Set a custom storage backend.
     ///
-    /// When a custom storage is provided, garbage collection is automatically
-    /// disabled (custom backends are expected to manage their own expiry,
-    /// e.g., Redis TTL). Use [`gc_interval`](Self::gc_interval) to re-enable
-    /// GC if your custom backend needs it.
+    /// Garbage collection never runs for a custom storage, even if
+    /// [`gc_interval`](Self::gc_interval) is called afterwards: custom backends
+    /// are expected to manage their own expiry (e.g., Redis TTL). This also
+    /// applies to a [`MemoryStorage`] passed here; spawn
+    /// [`GcHandle::spawn`] for it yourself if you need cleanup.
     pub fn storage(mut self, storage: Arc<dyn Storage>) -> Self {
         self.storage = Some(storage);
         self.gc_enabled = false;
@@ -208,9 +312,14 @@ impl RateTierBuilder {
 
     /// Set the garbage collection interval for expired entries.
     ///
-    /// Default: 60 seconds. Only applies when using the built-in
-    /// `MemoryStorage` backend.
+    /// Default: 60 seconds. Only applies to the built-in storage; it has no
+    /// effect once [`storage`](Self::storage) has been called.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `interval` is zero.
     pub fn gc_interval(mut self, interval: Duration) -> Self {
+        assert!(!interval.is_zero(), "gc interval must be non-zero");
         self.gc_interval = interval;
         self.gc_enabled = true;
         self
@@ -226,6 +335,12 @@ impl RateTierBuilder {
     }
 
     /// Build the `RateTier` configuration.
+    ///
+    /// Inside a Tokio runtime, the garbage collector of the built-in storage
+    /// starts here. Building also works outside a runtime: the collector then
+    /// starts on the first use of the storage (a check, the middleware or
+    /// [`RateTier::storage`]) that happens inside one, and expired entries are
+    /// kept until then.
     ///
     /// # Panics
     ///
@@ -245,31 +360,79 @@ impl RateTierBuilder {
         let clock: Arc<dyn Clock> = self.clock.unwrap_or_else(|| Arc::new(SystemClock::new()));
 
         // Use provided storage or default to MemoryStorage.
-        // GC only spawns for the default MemoryStorage and when gc_enabled is true.
-        let (storage, gc): (Arc<dyn Storage>, Option<GcHandle>) = match self.storage {
+        // GC only runs for the default MemoryStorage and when gc_enabled is true.
+        let (storage, gc): (Arc<dyn Storage>, Option<LazyGc>) = match self.storage {
             Some(custom) => (custom, None),
             None => {
                 let memory = Arc::new(MemoryStorage::new());
-                let gc = if self.gc_enabled {
-                    Some(GcHandle::spawn(
-                        memory.clone(),
-                        clock.clone(),
-                        self.gc_interval,
-                    ))
-                } else {
-                    None
-                };
+                let gc = self.gc_enabled.then(|| LazyGc {
+                    storage: memory.clone(),
+                    interval: self.gc_interval,
+                    handle: OnceLock::new(),
+                });
                 (memory, gc)
             }
         };
 
-        RateTier {
+        let rate_tier = RateTier {
             tiers: self.tiers,
             default_tier: self.default_tier,
             on_missing: self.on_missing,
+            on_unknown_tier: self.on_unknown_tier,
             storage,
             clock,
-            _gc: gc,
+            gc,
+        };
+        if let Some(gc) = &rate_tier.gc {
+            gc.ensure_started(&rate_tier.clock);
         }
+        rate_tier
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clock::FakeClock;
+
+    #[tokio::test]
+    async fn gc_starts_at_build_inside_a_runtime() {
+        let limiter = RateTier::builder()
+            .tier("free", Quota::per_second(1))
+            .build();
+        let gc = limiter.gc.as_ref().expect("built-in storage enables GC");
+        assert!(gc.handle.get().is_some());
+    }
+
+    #[test]
+    fn gc_built_outside_a_runtime_starts_on_first_use_and_repeats() {
+        let clock = FakeClock::new();
+        let limiter = RateTier::builder()
+            .tier("free", Quota::per_second(1))
+            .clock(clock.clone())
+            .gc_interval(Duration::from_secs(1))
+            .build();
+        let gc = limiter.gc.as_ref().expect("built-in storage enables GC");
+        assert!(gc.handle.get().is_none(), "no runtime, so no GC yet");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .start_paused(true)
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            limiter.check("u1", "free", 1).await.unwrap().unwrap();
+            assert!(gc.handle.get().is_some(), "first use starts the GC");
+
+            // The first tick fires at once, while the entry is still live.
+            tokio::task::yield_now().await;
+            assert_eq!(gc.storage.len(), 1);
+
+            // Expire the entry, then move Tokio's paused clock to the next tick.
+            clock.advance(Duration::from_secs(10));
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+            assert_eq!(gc.storage.len(), 0, "a later tick must collect it");
+        });
     }
 }

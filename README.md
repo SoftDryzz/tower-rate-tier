@@ -15,11 +15,13 @@ Every SaaS API needs rate limiting by user plan (free/pro/enterprise). `tower-ra
 - **Request cost/weight** — Expensive endpoints consume more quota (`/export` = 20, `/search` = 5)
 - **Async identifier** — Extract `(user_id, tier)` from headers, JWT, API keys, or request body
 - **GCRA algorithm** — Smooth rate enforcement, no burst-at-boundary issues (used by Stripe, GitHub, Shopify)
-- **Pluggable storage** — In-memory (DashMap) with automatic GC; custom backends via `Storage` trait
+- **Shared limits across instances** — Redis backend (feature `redis`) with an atomic GCRA script and Redis's own clock
+- **Pluggable storage** — In-memory (DashMap) with automatic GC, Redis, or your own via the `Storage` trait
+- **Safe defaults** — Unknown tiers and unidentified requests never bypass the limit unless you opt in
 - **Testable clock** — Deterministic time control in tests with `FakeClock`
 - **Standard headers** — `X-RateLimit-Limit`, `Remaining`, `Reset` (Unix timestamp), `Retry-After`
-- **Callbacks** — `on_limited` for metrics/logging, custom 429 response builder
-- **Tower-native** — Works with Axum, Tonic, Hyper, or any Tower-based framework
+- **Callbacks** — `on_limited` and `on_event` for metrics/logging, custom 429 response builder
+- **Tower-native** — Works with Axum, Hyper, or any Tower service whose response body can be built from a `String` (Tonic support is planned)
 
 ## Quick Start
 
@@ -27,7 +29,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tower-rate-tier = "0.2"
+tower-rate-tier = "0.3"
 ```
 
 ### Define Tiers
@@ -59,17 +61,32 @@ let layer = TierLimitLayer::new(tier)
 
 ### Apply to Routes
 
+Give expensive endpoints a higher cost with `cost_fn`. It runs inside the
+middleware, so it works when the limiter is added with `Router::layer`:
+
 ```rust
-use axum::{Router, routing::{get, post}};
-use tower_rate_tier::tier_cost;
+use axum::{Router, extract::MatchedPath, routing::{get, post}};
+
+let layer = layer.cost_fn(|req| {
+    match req.extensions.get::<MatchedPath>().map(MatchedPath::as_str) {
+        Some("/api/search") => 5,  // cost: 5
+        Some("/api/export") => 20, // cost: 20
+        Some("/health") => 0,      // free (no quota consumed)
+        _ => 1,                    // cost: 1 (default)
+    }
+});
 
 let app = Router::new()
-    .route("/api/users", get(list_users))                   // cost: 1 (default)
-    .route("/api/search", post(search).layer(tier_cost(5)))  // cost: 5
-    .route("/api/export", post(export).layer(tier_cost(20))) // cost: 20
-    .route("/health", get(health).layer(tier_cost(0)))       // free (no quota consumed)
+    .route("/api/users", get(list_users))
+    .route("/api/search", post(search))
+    .route("/api/export", post(export))
+    .route("/health", get(health))
     .layer(layer);
 ```
+
+The `tier_cost(n)` layer also sets a cost, but it must wrap the limiter. A
+route's own `.layer(tier_cost(n))` runs *inside* a limiter added with
+`Router::layer`, so its cost arrives too late and is ignored.
 
 ### Rate Limit Response
 
@@ -95,7 +112,7 @@ let layer = TierLimitLayer::new(tier)
         Response::builder()
             .status(StatusCode::TOO_MANY_REQUESTS)
             .header("Content-Type", "application/problem+json")
-            .header("Retry-After", limited.retry_after.as_secs())
+            .header("Retry-After", limited.retry_after_secs())
             .body(format!(r#"{{"type":"rate_limit","tier":"{}"}}"#, tier))
             .unwrap()
     });
@@ -108,30 +125,74 @@ let layer = TierLimitLayer::new(tier)
     .identifier_fn(|headers| { /* ... */ None })
     .on_limited(|user_id, tier, limited| {
         eprintln!("rate limited: user={user_id} tier={tier} retry_after={:?}", limited.retry_after);
+    })
+    .on_event(|event| match event {
+        LimitEvent::StorageError { error, .. } => eprintln!("rate limit storage failed: {error}"),
+        LimitEvent::UnknownTier { user_id, tier, .. } => eprintln!("unknown tier {tier} for {user_id}"),
+        LimitEvent::CostExceedsLimit { cost, limit, .. } => eprintln!("cost {cost} > limit {limit}"),
+        _ => {}
     });
 ```
+
+A request whose cost is above its tier's limit can never succeed, so it is
+answered with `403 Forbidden` and no `Retry-After`, without touching storage.
 
 ## Optional Features
 
 ```toml
 # Body-based identification (opt-in, buffers request body)
-tower-rate-tier = { version = "0.2", features = ["buffered-body"] }
+tower-rate-tier = { version = "0.3", features = ["buffered-body"] }
+
+# Limits shared by every instance through Redis
+tower-rate-tier = { version = "0.3", features = ["redis"] }
 ```
+
+## Redis: Limits Shared by Every Instance
+
+With the `redis` feature, `RedisStorage` keeps the rate-limit state in Redis,
+so every instance of a service enforces the same limits:
+
+```rust
+use std::sync::Arc;
+use tower_rate_tier::{Quota, RateTier, RedisStorage};
+
+let conn = redis::Client::open("redis://127.0.0.1:6379")?
+    .get_connection_manager()
+    .await?;
+
+let tier = RateTier::builder()
+    .tier("free", Quota::per_hour(100))
+    .storage(Arc::new(RedisStorage::new(conn)))
+    .build();
+```
+
+- Each check is one atomic Lua script (`EVALSHA`, reloaded after `NOSCRIPT`).
+  Time comes from Redis's `TIME`, so instances never disagree about the clock.
+- Keys are `trt:<tier>:<sha1(user_id)>` and expire when the bucket is full
+  again, so nothing needs cleaning up. For ids with little entropy (IP
+  addresses, emails), add `.key_secret(secret)` so they cannot be recovered
+  from Redis.
+- A check that takes longer than 100 ms (`.timeout(..)`) counts as a storage
+  error and follows the [storage error policy](#storage-error-behavior).
+- Works with `ConnectionManager`, multiplexed and cluster connections.
+
+See [`examples/axum_api_key.rs`](examples/axum_api_key.rs) for a complete
+service that also looks up each API key's tier in Redis.
 
 ## Custom Storage Backend
 
-Implement the `Storage` trait for your own backend:
+Implement the `Storage` trait for any other backend. It receives a
+`StorageKey { user_id, tier }`; encode it so that distinct pairs never share
+state (for example, length-prefix the parts instead of joining them with `:`).
 
 ```rust
-let custom_storage: Arc<dyn Storage> = Arc::new(MyRedisStorage::new());
+let custom_storage: Arc<dyn Storage> = Arc::new(MyStorage::new());
 
 let tier = RateTier::builder()
     .tier("free", Quota::per_hour(100))
     .storage(custom_storage) // GC disabled automatically for custom backends
     .build();
 ```
-
-> Redis support is planned for v0.3.
 
 ## Testing
 
@@ -160,9 +221,24 @@ async fn test_rate_limit_expiry() {
 
 ```rust
 let tier = RateTier::builder()
-    .on_missing(OnMissing::UseDefault)           // Use default tier
+    .on_missing(OnMissing::UseDefault)           // Use default tier (403 if none is set)
     // .on_missing(OnMissing::Allow)              // No rate limiting
     // .on_missing(OnMissing::Deny(StatusCode::FORBIDDEN)) // Block
+    .build();
+```
+
+## Handling Unknown Tiers
+
+If the identifier returns a tier that is not configured (a typo, a plan the
+limiter does not know yet, or a value a client can influence), the request is
+**not** let through unlimited. By default it gets the default tier's quota in
+the user's own bucket, or `403 Forbidden` when no default tier is set:
+
+```rust
+let tier = RateTier::builder()
+    .on_unknown_tier(OnUnknownTier::UseDefault)              // Default tier's quota (default)
+    // .on_unknown_tier(OnUnknownTier::Deny(StatusCode::FORBIDDEN)) // Block
+    // .on_unknown_tier(OnUnknownTier::Allow)                  // No rate limiting (opt-in)
     .build();
 ```
 
@@ -173,6 +249,12 @@ let layer = TierLimitLayer::new(tier)
     .on_storage_error(OnStorageError::Allow);  // Fail open (default)
     // .on_storage_error(OnStorageError::Deny); // Fail closed (503)
 ```
+
+## Minimum Supported Rust Version
+
+Rust 1.75 for the default features and `buffered-body`, and Rust 1.88 with
+`redis` (required by the `redis` crate). The MSRV is only raised in minor
+releases, and every raise is noted in the [changelog](CHANGELOG.md).
 
 ## Comparison
 

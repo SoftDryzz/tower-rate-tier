@@ -1,13 +1,24 @@
-//! Tier-based rate limiting middleware for [`tower`] services.
+//! Tier-based rate limiting middleware for [`tower`](https://docs.rs/tower) services.
 //!
 //! Assign users to named tiers (e.g. "free", "pro") with distinct quotas,
 //! and let the middleware enforce limits automatically via the GCRA algorithm.
+//!
+//! # Features
+//!
+//! - `buffered-body`: identify users from the request body
+//!   (`TierLimitLayer::buffer_body`).
+//! - `redis`: `RedisStorage` keeps the limits in Redis, shared by every
+//!   instance of a service. Requires Rust 1.88.
+
+#![warn(missing_debug_implementations)]
 
 pub(crate) mod check;
 /// Clock abstractions for real and deterministic (test) time sources.
 pub mod clock;
 /// Cost extraction: decide how many tokens each request consumes.
 pub mod cost;
+/// Events reported while rate limiting, for logging and metrics.
+pub mod event;
 /// Background garbage collection for expired rate-limit entries.
 pub mod gc;
 /// Generic Cell Rate Algorithm (GCRA) implementation.
@@ -20,6 +31,8 @@ pub mod layer;
 pub mod on_missing;
 /// Policy for handling storage backend errors.
 pub mod on_storage_error;
+/// Policy for handling tiers that are not configured.
+pub mod on_unknown_tier;
 /// Quota definitions (rate, burst, period).
 pub mod quota;
 /// HTTP response helpers for rate-limit headers and 429 replies.
@@ -33,17 +46,23 @@ pub mod tier;
 
 #[cfg(feature = "buffered-body")]
 /// Buffered-body variants that allow identifier access to the request body.
+///
+/// Requires the `buffered-body` feature.
 pub mod buffered;
 
 pub use cost::{tier_cost, TierCost};
+pub use event::LimitEvent;
 pub use gcra::{RateLimitInfo, RateLimited};
 pub use identifier::{TierIdentifier, TierIdentity};
 pub use layer::TierLimitLayer;
 pub use on_missing::OnMissing;
 pub use on_storage_error::OnStorageError;
+pub use on_unknown_tier::OnUnknownTier;
 pub use quota::{Nanos, Quota};
-pub use storage::StorageError;
+pub use storage::{StorageError, StorageKey};
 pub use tier::{CheckError, RateTier};
 
 #[cfg(feature = "buffered-body")]
 pub use buffered::{BufferedTierLimitLayer, BufferedTierLimitService};
+#[cfg(feature = "redis")]
+pub use storage::redis::RedisStorage;

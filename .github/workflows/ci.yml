@@ -10,13 +10,28 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
+  check:
+    name: check (${{ matrix.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: no features
+            flags: --no-default-features
+          - name: buffered-body
+            flags: --no-default-features --features buffered-body
+          - name: redis
+            flags: --no-default-features --features redis
+          - name: all features
+            flags: --all-features
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --all-features
-      - run: cargo test --no-default-features
+        with:
+          components: clippy
+      - run: cargo clippy ${{ matrix.flags }} --all-targets -- -D warnings
+      - run: cargo test ${{ matrix.flags }}
 
   msrv:
     runs-on: ubuntu-latest
@@ -28,14 +43,76 @@ jobs:
       - run: cargo check
       - run: cargo check --features buffered-body
 
-  clippy:
+  # redis 1.x needs Rust 1.88, so the redis feature has its own MSRV.
+  msrv-redis:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
-          components: clippy
-      - run: cargo clippy --all-features -- -D warnings
+          toolchain: "1.88"
+      - run: cargo check --features redis
+
+  redis:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      REDIS_URL: redis://127.0.0.1:6379
+      TRT_REQUIRE_REDIS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --features redis --test redis_tests
+
+  # Runs examples/axum_api_key.rs end to end against the Redis service.
+  example-api-key:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      REDIS_URL: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --example axum_api_key --features redis
+      - name: Seed API keys
+        run: |
+          docker exec ${{ job.services.redis.id }} redis-cli SET tier:key_abc123 pro
+          docker exec ${{ job.services.redis.id }} redis-cli SET tier:key_xyz789 free
+      - name: Check the example's responses
+        run: |
+          set -euo pipefail
+          target/debug/examples/axum_api_key &
+          status() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          for _ in $(seq 1 30); do
+            [ "$(status http://localhost:3000/api/data || true)" != "000" ] && break
+            sleep 1
+          done
+          test "$(status -H 'x-api-key: unknown' http://localhost:3000/api/data)" = 401
+          headers=$(curl -s -D - -o /dev/null -H 'x-api-key: key_abc123' http://localhost:3000/api/data)
+          echo "$headers" | grep -qi '^x-ratelimit-limit: 100'
+          # free allows 10 per minute and an export costs 5.
+          for _ in 1 2; do
+            test "$(status -X POST -H 'x-api-key: key_xyz789' http://localhost:3000/api/export)" = 200
+          done
+          test "$(status -X POST -H 'x-api-key: key_xyz789' http://localhost:3000/api/export)" = 429
 
   fmt:
     runs-on: ubuntu-latest
@@ -52,3 +129,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: RUSTDOCFLAGS="-D warnings -W missing_docs" cargo doc --no-deps --all-features
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      # Cargo.lock is not committed, so audit the versions a fresh resolve picks.
+      - run: cargo generate-lockfile
+      - run: cargo audit

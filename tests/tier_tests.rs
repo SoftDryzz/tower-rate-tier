@@ -1,3 +1,6 @@
+use std::future::Future;
+use std::pin::pin;
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 use tower_rate_tier::clock::FakeClock;
 use tower_rate_tier::on_missing::OnMissing;
@@ -152,6 +155,43 @@ async fn check_unknown_tier_returns_error() {
     }
 }
 
+#[test]
+fn build_works_outside_a_tokio_runtime() {
+    let limiter = RateTier::builder()
+        .tier("free", Quota::per_hour(100))
+        .build();
+
+    // The GC task starts with the first check, which runs inside a runtime.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        assert!(limiter.check("u1", "free", 1).await.unwrap().is_ok());
+    });
+}
+
+#[test]
+fn check_works_outside_a_tokio_runtime() {
+    // Polled by hand with no runtime at all, as another executor would do.
+    let limiter = RateTier::builder()
+        .tier("free", Quota::per_hour(100))
+        .build();
+
+    let mut check = pin!(limiter.check("u1", "free", 1));
+    let mut cx = Context::from_waker(Waker::noop());
+    match check.as_mut().poll(&mut cx) {
+        Poll::Ready(result) => assert!(result.unwrap().is_ok()),
+        Poll::Pending => panic!("in-memory checks complete immediately"),
+    }
+}
+
+#[test]
+#[should_panic(expected = "gc interval must be non-zero")]
+fn zero_gc_interval_panics() {
+    let _ = RateTier::builder().gc_interval(Duration::ZERO);
+}
+
 #[tokio::test]
 async fn build_with_custom_gc_interval() {
     let _limiter = RateTier::builder()
@@ -197,4 +237,35 @@ async fn check_tier_upgrade_gets_new_quota() {
     assert!(limiter.check("alice", "pro", 1).await.unwrap().is_ok());
     let info = limiter.check("alice", "pro", 1).await.unwrap().unwrap();
     assert!(info.remaining > 0, "pro tier should have remaining quota");
+}
+
+#[tokio::test]
+async fn users_in_different_tiers_never_share_a_bucket() {
+    let limiter = RateTier::builder()
+        .tier("c", Quota::per_hour(1))
+        .tier("b:c", Quota::per_hour(1))
+        .clock(FakeClock::new())
+        .build();
+
+    assert!(limiter.check("a:b", "c", 1).await.unwrap().is_ok());
+    // Both used to be stored under the same "a:b:c" key.
+    assert!(limiter.check("a", "b:c", 1).await.unwrap().is_ok());
+}
+
+#[tokio::test]
+async fn cost_above_the_tier_limit_is_an_error() {
+    let limiter = RateTier::builder()
+        .tier("free", Quota::per_second(5))
+        .clock(FakeClock::new())
+        .build();
+
+    match limiter.check("u1", "free", 6).await {
+        Err(tower_rate_tier::CheckError::CostExceedsLimit { cost, limit, .. }) => {
+            assert_eq!((cost, limit), (6, 5));
+        }
+        other => panic!("expected CostExceedsLimit, got {other:?}"),
+    }
+    // Nothing was consumed: the full burst is still available.
+    let info = limiter.check("u1", "free", 5).await.unwrap().unwrap();
+    assert_eq!(info.remaining, 0);
 }

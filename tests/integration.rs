@@ -259,3 +259,295 @@ async fn recovery_after_time_elapses() {
     let resp = svc.call(build_request(Some("user1"))).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn client_that_waits_retry_after_is_allowed() {
+    let clock = FakeClock::new();
+    let rate_tier = RateTier::builder()
+        .tier("free", Quota::per_minute(1))
+        .default_tier("free")
+        .clock(clock.clone())
+        .build();
+    let mut svc = TierLimitLayer::new(rate_tier)
+        .identifier_fn(|_| Some(TierIdentity::new("u1", "free")))
+        .layer(OkService);
+
+    let resp = svc.call(build_request(None)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Half a second into a second: a rounded-down Retry-After is too short.
+    clock.advance(Duration::from_millis(30_500));
+    let resp = svc.call(build_request(None)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    let wait: u64 = resp.headers()["retry-after"]
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    clock.advance(Duration::from_secs(wait));
+    let resp = svc.call(build_request(None)).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "waited Retry-After = {wait}s"
+    );
+}
+
+#[tokio::test]
+async fn reset_header_is_a_unix_timestamp_near_now() {
+    let layer = make_layer(FakeClock::new());
+    let mut svc = layer.layer(OkService);
+
+    let before = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let resp = svc.call(build_request(Some("user1"))).await.unwrap();
+    let reset: u64 = resp.headers()["x-ratelimit-reset"]
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    // free = 2/sec, so one request replenishes within half a second.
+    assert!(
+        (before..=before + 2).contains(&reset),
+        "reset={reset} now={before}"
+    );
+}
+
+#[tokio::test]
+async fn layer_and_programmatic_checks_share_one_rate_tier() {
+    let rate_tier = std::sync::Arc::new(
+        RateTier::builder()
+            .tier("free", Quota::per_second(2))
+            .default_tier("free")
+            .clock(FakeClock::new())
+            .build(),
+    );
+    let mut svc = TierLimitLayer::new(rate_tier.clone())
+        .identifier_fn(|_| Some(TierIdentity::new("u1", "free")))
+        .layer(OkService);
+
+    // One request through the middleware plus one direct check use up 2/sec.
+    let resp = svc.call(build_request(None)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(rate_tier.check("u1", "free", 1).await.unwrap().is_ok());
+
+    let resp = svc.call(build_request(None)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+/// Storage backend that always fails, like an unreachable Redis.
+struct FailingStorage;
+
+impl tower_rate_tier::storage::Storage for FailingStorage {
+    fn check_and_update<'a>(
+        &'a self,
+        _key: tower_rate_tier::StorageKey<'a>,
+        _quota: &'a Quota,
+        _cost: u32,
+        _now: tower_rate_tier::Nanos,
+    ) -> tower_rate_tier::storage::StorageFuture<'a> {
+        let error = tower_rate_tier::StorageError(Box::from("connection refused"));
+        Box::pin(std::future::ready(Err(error)))
+    }
+}
+
+fn failing_layer(
+    policy: tower_rate_tier::OnStorageError,
+    events: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) -> TierLimitLayer {
+    let rate_tier = RateTier::builder()
+        .tier("free", Quota::per_second(1))
+        .storage(std::sync::Arc::new(FailingStorage))
+        .build();
+    TierLimitLayer::new(rate_tier)
+        .identifier_fn(|_| Some(TierIdentity::new("u1", "free")))
+        .on_storage_error(policy)
+        .on_event(move |event| {
+            if let tower_rate_tier::LimitEvent::StorageError {
+                user_id,
+                tier,
+                error,
+                ..
+            } = event
+            {
+                events
+                    .lock()
+                    .unwrap()
+                    .push(format!("{user_id}/{tier}: {error}"));
+            }
+        })
+}
+
+#[tokio::test]
+async fn storage_error_is_reported_and_fails_closed_when_denied() {
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut svc =
+        failing_layer(tower_rate_tier::OnStorageError::Deny, events.clone()).layer(OkService);
+
+    let resp = svc.call(build_request(None)).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        *events.lock().unwrap(),
+        ["u1/free: storage error: connection refused"]
+    );
+}
+
+#[tokio::test]
+async fn storage_error_is_reported_and_fails_open_by_default() {
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut svc =
+        failing_layer(tower_rate_tier::OnStorageError::default(), events.clone()).layer(OkService);
+
+    let resp = svc.call(build_request(None)).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(!resp.headers().contains_key("x-ratelimit-limit"));
+    assert_eq!(events.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn cost_above_the_tier_limit_is_forbidden_without_retry_after() {
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = events.clone();
+    let mut svc = make_layer(FakeClock::new())
+        .on_event(move |event| {
+            if let tower_rate_tier::LimitEvent::CostExceedsLimit {
+                tier, cost, limit, ..
+            } = event
+            {
+                seen.lock()
+                    .unwrap()
+                    .push(format!("{tier}: {cost} > {limit}"));
+            }
+        })
+        .layer(OkService);
+
+    // free allows 2/sec, so a request costing 3 can never pass.
+    let resp = svc.call(build_request_with_cost("user1", 3)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert!(!resp.headers().contains_key("retry-after"));
+    assert!(resp.body().contains(r#""cost":3"#), "{}", resp.body());
+    assert_eq!(*events.lock().unwrap(), ["free: 3 > 2"]);
+
+    // The rejected request consumed nothing.
+    let resp = svc.call(build_request(Some("user1"))).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers()["x-ratelimit-remaining"], "1");
+}
+
+fn request_with_tier(api_key: &str, tier: &str) -> Request<String> {
+    Request::builder()
+        .header("x-api-key", api_key)
+        .header("x-tier", tier)
+        .body(String::new())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn unknown_tier_gets_the_default_quota_in_its_own_bucket() {
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = events.clone();
+    let mut svc = make_layer(FakeClock::new())
+        .on_event(move |event| {
+            if let tower_rate_tier::LimitEvent::UnknownTier { user_id, tier, .. } = event {
+                seen.lock().unwrap().push(format!("{user_id}: {tier}"));
+            }
+        })
+        .layer(OkService);
+
+    // The client picks the tier header; an unknown one must not lift the limit.
+    for _ in 0..2 {
+        let resp = svc.call(request_with_tier("user1", "zzz")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers()["x-ratelimit-limit"], "2");
+    }
+    let resp = svc.call(request_with_tier("user1", "zzz")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(events.lock().unwrap().len(), 3);
+    assert_eq!(events.lock().unwrap()[0], "user1: zzz");
+
+    // Other users keep their own buckets.
+    let resp = svc.call(request_with_tier("user2", "zzz")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn unknown_tier_without_a_default_tier_is_forbidden() {
+    let rate_tier = RateTier::builder()
+        .tier("free", Quota::per_second(2))
+        .clock(FakeClock::new())
+        .build();
+    let mut svc = TierLimitLayer::new(rate_tier)
+        .identifier_fn(|_| Some(TierIdentity::new("u1", "zzz")))
+        .layer(OkService);
+
+    let resp = svc.call(build_request(None)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn unknown_tier_policy_can_deny_or_allow() {
+    let build = |policy| {
+        let rate_tier = RateTier::builder()
+            .tier("free", Quota::per_second(1))
+            .default_tier("free")
+            .on_unknown_tier(policy)
+            .clock(FakeClock::new())
+            .build();
+        TierLimitLayer::new(rate_tier)
+            .identifier_fn(|_| Some(TierIdentity::new("u1", "zzz")))
+            .layer(OkService)
+    };
+
+    let mut deny = build(tower_rate_tier::OnUnknownTier::Deny(
+        StatusCode::INTERNAL_SERVER_ERROR,
+    ));
+    let resp = deny.call(build_request(None)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    let mut allow = build(tower_rate_tier::OnUnknownTier::Allow);
+    for _ in 0..5 {
+        let resp = allow.call(build_request(None)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(!resp.headers().contains_key("x-ratelimit-limit"));
+    }
+}
+
+#[tokio::test]
+async fn unknown_tier_inherits_an_unlimited_default_tier() {
+    let rate_tier = RateTier::builder()
+        .tier("free", Quota::per_second(1))
+        .tier("enterprise", Quota::unlimited())
+        .default_tier("enterprise")
+        .clock(FakeClock::new())
+        .build();
+    let mut svc = TierLimitLayer::new(rate_tier)
+        .identifier_fn(|_| Some(TierIdentity::new("u1", "zzz")))
+        .layer(OkService);
+
+    // UseDefault means the default tier's quota, which here is unlimited.
+    for _ in 0..5 {
+        let resp = svc.call(build_request(None)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+}
+
+#[tokio::test]
+async fn unidentified_request_without_a_default_tier_is_forbidden() {
+    // OnMissing::UseDefault is the default policy, but there is no default tier.
+    let rate_tier = RateTier::builder()
+        .tier("free", Quota::per_second(1))
+        .clock(FakeClock::new())
+        .build();
+    let mut svc = TierLimitLayer::new(rate_tier)
+        .identifier_fn(|_| None)
+        .layer(OkService);
+
+    let resp = svc.call(build_request(None)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}

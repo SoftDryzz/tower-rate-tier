@@ -1,12 +1,15 @@
 #![cfg(feature = "buffered-body")]
 
+use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use http::{HeaderMap, Request, Response, StatusCode};
-use http_body::Frame;
+use http_body::{Frame, SizeHint};
 use http_body_util::Full;
 use tower_layer::Layer;
 use tower_rate_tier::clock::FakeClock;
@@ -135,6 +138,77 @@ async fn body_too_large_returns_413() {
     assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
 }
 
+/// Streams 1 MiB chunks and counts how many of them were read.
+struct CountingBody {
+    chunks_left: usize,
+    chunks_read: Arc<AtomicUsize>,
+    declared_len: Option<u64>,
+}
+
+impl CountingBody {
+    fn new(chunks: usize, declared_len: Option<u64>) -> (Self, Arc<AtomicUsize>) {
+        let chunks_read = Arc::new(AtomicUsize::new(0));
+        let body = Self {
+            chunks_left: chunks,
+            chunks_read: chunks_read.clone(),
+            declared_len,
+        };
+        (body, chunks_read)
+    }
+}
+
+impl http_body::Body for CountingBody {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        if self.chunks_left == 0 {
+            return Poll::Ready(None);
+        }
+        self.chunks_left -= 1;
+        self.chunks_read.fetch_add(1, Ordering::SeqCst);
+        Poll::Ready(Some(Ok(Frame::data(Bytes::from(vec![0u8; 1 << 20])))))
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        match self.declared_len {
+            Some(len) => SizeHint::with_exact(len),
+            None => SizeHint::default(),
+        }
+    }
+}
+
+#[tokio::test]
+async fn oversized_streaming_body_stops_at_the_limit() {
+    let layer = make_buffered_layer(FakeClock::new()).max_body_size(1024);
+    let mut svc = layer.layer(EchoService);
+
+    let (body, chunks_read) = CountingBody::new(64, None);
+    let resp = svc.call(Request::new(body)).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(
+        chunks_read.load(Ordering::SeqCst),
+        1,
+        "reading must stop at the first chunk that crosses the limit"
+    );
+}
+
+#[tokio::test]
+async fn declared_oversized_body_is_rejected_without_reading() {
+    let layer = make_buffered_layer(FakeClock::new()).max_body_size(1024);
+    let mut svc = layer.layer(EchoService);
+
+    let (body, chunks_read) = CountingBody::new(64, Some(64 << 20));
+    let resp = svc.call(Request::new(body)).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(chunks_read.load(Ordering::SeqCst), 0);
+}
+
 #[tokio::test]
 async fn body_within_limit_passes() {
     let clock = FakeClock::new();
@@ -193,4 +267,30 @@ async fn body_read_error_returns_400() {
 
     let resp = svc.call(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn cost_above_the_tier_limit_is_forbidden() {
+    let mut svc = make_buffered_layer(FakeClock::new()).layer(EchoService);
+
+    // free allows 2/sec, so a request costing 3 can never pass.
+    let mut req = json_request(r#"{"user_id": "alice"}"#);
+    req.extensions_mut().insert(tower_rate_tier::TierCost(3));
+    let resp = svc.call(req).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn unknown_tier_in_body_gets_the_default_quota() {
+    let mut svc = make_buffered_layer(FakeClock::new()).layer(EchoService);
+    let body = r#"{"user_id": "alice", "tier": "zzz"}"#;
+
+    // free (the default) allows 2/sec.
+    for _ in 0..2 {
+        let resp = svc.call(json_request(body)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+    let resp = svc.call(json_request(body)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
 }

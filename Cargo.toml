@@ -1,6 +1,6 @@
 [package]
 name = "tower-rate-tier"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT OR Apache-2.0"
@@ -9,8 +9,10 @@ repository = "https://github.com/SoftDryzz/tower-rate-tier"
 keywords = ["tower", "rate-limit", "middleware", "tier", "gcra"]
 categories = ["web-programming", "network-programming"]
 
+[package.metadata.docs.rs]
+all-features = true
+
 [dependencies]
-tower = { version = "0.5", features = ["util"] }
 tower-layer = "0.3"
 tower-service = "0.3"
 http = "1"
@@ -18,12 +20,15 @@ http-body = "1"
 bytes = "1"
 dashmap = "6"
 tokio = { version = "1", features = ["time", "rt"] }
-pin-project-lite = "0.2"
 http-body-util = { version = "0.1", optional = true }
-redis = { version = "0.27", features = ["tokio-comp"], optional = true }
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "script"], optional = true }
+sha1_smol = { version = "1", optional = true }
 
 [dev-dependencies]
 axum = "0.8"
+tower = { version = "0.5", features = ["util"] }
+# Runs the Redis GCRA script in an embedded Lua 5.1, the version Redis uses.
+mlua = { version = "0.12", features = ["lua51", "vendored"] }
 tokio = { version = "1", features = ["full", "test-util"] }
 hyper = "1"
 serde = { version = "1", features = ["derive"] }
@@ -35,7 +40,11 @@ criterion = { version = "0.5", features = ["html_reports"] }
 name = "middleware"
 harness = false
 
+[[example]]
+name = "axum_api_key"
+required-features = ["redis"]
+
 [features]
 default = []
-redis = ["dep:redis"]
+redis = ["dep:redis", "dep:sha1_smol"]
 buffered-body = ["dep:http-body-util"]

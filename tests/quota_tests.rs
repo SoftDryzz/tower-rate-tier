@@ -78,6 +78,24 @@ fn per_second_zero_panics() {
 }
 
 #[test]
+fn per_second_one_billion_has_one_nanosecond_interval() {
+    let q = Quota::per_second(1_000_000_000);
+    assert_eq!(q.emission_interval_nanos(), 1);
+}
+
+#[test]
+#[should_panic(expected = "one request per nanosecond")]
+fn per_second_faster_than_one_per_nanosecond_panics() {
+    Quota::per_second(1_000_000_001);
+}
+
+#[test]
+#[should_panic(expected = "one request per nanosecond")]
+fn with_window_shorter_than_count_nanos_panics() {
+    Quota::with_window(10, Duration::from_nanos(5));
+}
+
+#[test]
 fn quota_equality() {
     let a = Quota::per_hour(100);
     let b = Quota::per_hour(100);

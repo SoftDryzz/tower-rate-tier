@@ -25,39 +25,40 @@ pub struct Quota {
 
 impl Quota {
     /// Create a quota allowing `count` requests per second.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `count` is 0 or greater than 1,000,000,000 (faster than one
+    /// request per nanosecond).
     pub fn per_second(count: u32) -> Self {
-        assert!(count > 0, "quota count must be greater than 0");
-        Self {
-            max_burst: count,
-            window: Duration::from_secs(1),
-        }
+        Self::with_window(count, Duration::from_secs(1))
     }
 
     /// Create a quota allowing `count` requests per minute.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `count` is 0.
     pub fn per_minute(count: u32) -> Self {
-        assert!(count > 0, "quota count must be greater than 0");
-        Self {
-            max_burst: count,
-            window: Duration::from_secs(60),
-        }
+        Self::with_window(count, Duration::from_secs(60))
     }
 
     /// Create a quota allowing `count` requests per hour.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `count` is 0.
     pub fn per_hour(count: u32) -> Self {
-        assert!(count > 0, "quota count must be greater than 0");
-        Self {
-            max_burst: count,
-            window: Duration::from_secs(3600),
-        }
+        Self::with_window(count, Duration::from_secs(3600))
     }
 
     /// Create a quota allowing `count` requests per day (24 hours).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `count` is 0.
     pub fn per_day(count: u32) -> Self {
-        assert!(count > 0, "quota count must be greater than 0");
-        Self {
-            max_burst: count,
-            window: Duration::from_secs(86_400),
-        }
+        Self::with_window(count, Duration::from_secs(86_400))
     }
 
     /// Create a quota with a custom window duration.
@@ -75,10 +76,16 @@ impl Quota {
     ///
     /// # Panics
     ///
-    /// Panics if `count` is 0 or `window` is zero.
+    /// Panics if `count` is 0, `window` is zero, or `window` is shorter than
+    /// `count` nanoseconds (faster than one request per nanosecond, which
+    /// would make the emission interval zero).
     pub fn with_window(count: u32, window: Duration) -> Self {
         assert!(count > 0, "quota count must be greater than 0");
         assert!(!window.is_zero(), "window must be non-zero");
+        assert!(
+            window.as_nanos() >= u128::from(count),
+            "quota cannot allow more than one request per nanosecond"
+        );
         Self {
             max_burst: count,
             window,

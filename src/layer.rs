@@ -1,13 +1,31 @@
+use std::fmt;
 use std::sync::Arc;
 
 use http::{HeaderMap, Response};
 use tower_layer::Layer;
 
+use crate::event::LimitEvent;
 use crate::gcra::RateLimited;
 use crate::identifier::{ClosureIdentifier, TierIdentifier, TierIdentity};
 use crate::on_storage_error::OnStorageError;
 use crate::service::TierLimitService;
 use crate::tier::RateTier;
+
+/// Callback invoked when a request is rate limited.
+///
+/// Receives `(user_id, tier_name, rate_limited_info)`.
+pub type OnLimitedFn = dyn Fn(&str, &str, &RateLimited) + Send + Sync;
+
+/// Custom response builder for rate-limited requests.
+///
+/// Receives `(user_id, tier_name, rate_limited_info)` and returns a `Response<String>`.
+pub type RateLimitedResponseFn = dyn Fn(&str, &str, &RateLimited) -> Response<String> + Send + Sync;
+
+/// Callback invoked for every [`LimitEvent`].
+pub type OnEventFn = dyn for<'a> Fn(&LimitEvent<'a>) + Send + Sync;
+
+/// Computes the cost of a request from its method, URI, headers and extensions.
+pub type CostFn = dyn Fn(&http::request::Parts) -> u32 + Send + Sync;
 
 /// Tower layer for tier-based rate limiting.
 ///
@@ -30,27 +48,36 @@ use crate::tier::RateTier;
 ///         Some(TierIdentity::new(key, "free"))
 ///     });
 /// ```
-/// Callback invoked when a request is rate limited.
-///
-/// Receives `(user_id, tier_name, rate_limited_info)`.
-pub type OnLimitedFn = dyn Fn(&str, &str, &RateLimited) + Send + Sync;
-
-/// Custom response builder for rate-limited requests.
-///
-/// Receives `(user_id, tier_name, rate_limited_info)` and returns a `Response<String>`.
-pub type RateLimitedResponseFn = dyn Fn(&str, &str, &RateLimited) -> Response<String> + Send + Sync;
-
-/// Tower layer for tier-based rate limiting.
-///
-/// Wraps an inner service with [`TierLimitService`]
-/// to enforce per-tier rate limits.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TierLimitLayer {
     pub(crate) rate_tier: Arc<RateTier>,
+    pub(crate) settings: Settings,
+}
+
+/// Middleware settings shared by a layer and the services it creates.
+#[derive(Clone)]
+pub(crate) struct Settings {
     pub(crate) identifier: Arc<dyn TierIdentifier>,
     pub(crate) on_storage_error: OnStorageError,
     pub(crate) on_limited: Option<Arc<OnLimitedFn>>,
     pub(crate) rate_limited_response: Option<Arc<RateLimitedResponseFn>>,
+    pub(crate) on_event: Option<Arc<OnEventFn>>,
+    pub(crate) cost_fn: Option<Arc<CostFn>>,
+}
+
+impl fmt::Debug for Settings {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Settings")
+            .field("on_storage_error", &self.on_storage_error)
+            .field("on_limited", &self.on_limited.is_some())
+            .field(
+                "rate_limited_response",
+                &self.rate_limited_response.is_some(),
+            )
+            .field("on_event", &self.on_event.is_some())
+            .field("cost_fn", &self.cost_fn.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Default identifier that returns `None` for all requests.
@@ -69,16 +96,25 @@ impl TierIdentifier for NoopIdentifier {
 impl TierLimitLayer {
     /// Create a new layer with the given rate tier configuration.
     ///
+    /// Accepts a [`RateTier`] or an `Arc<RateTier>`. Pass a shared `Arc` to
+    /// count middleware requests and programmatic
+    /// [`RateTier::check()`](crate::RateTier::check) calls against the same
+    /// limits and storage.
+    ///
     /// You must call [`identifier`](Self::identifier) or
     /// [`identifier_fn`](Self::identifier_fn) before using this layer,
     /// otherwise all requests will be treated as unidentified.
-    pub fn new(rate_tier: RateTier) -> Self {
+    pub fn new(rate_tier: impl Into<Arc<RateTier>>) -> Self {
         Self {
-            rate_tier: Arc::new(rate_tier),
-            identifier: Arc::new(NoopIdentifier),
-            on_storage_error: OnStorageError::default(),
-            on_limited: None,
-            rate_limited_response: None,
+            rate_tier: rate_tier.into(),
+            settings: Settings {
+                identifier: Arc::new(NoopIdentifier),
+                on_storage_error: OnStorageError::default(),
+                on_limited: None,
+                rate_limited_response: None,
+                on_event: None,
+                cost_fn: None,
+            },
         }
     }
 
@@ -86,7 +122,7 @@ impl TierLimitLayer {
     ///
     /// Use this for async identification logic (e.g., database or Redis lookups).
     pub fn identifier(mut self, identifier: impl TierIdentifier) -> Self {
-        self.identifier = Arc::new(identifier);
+        self.settings.identifier = Arc::new(identifier);
         self
     }
 
@@ -97,7 +133,7 @@ impl TierLimitLayer {
     where
         F: Fn(&HeaderMap) -> Option<TierIdentity> + Send + Sync + 'static,
     {
-        self.identifier = Arc::new(ClosureIdentifier(f));
+        self.settings.identifier = Arc::new(ClosureIdentifier(f));
         self
     }
 
@@ -105,7 +141,7 @@ impl TierLimitLayer {
     ///
     /// Default: [`OnStorageError::Allow`] (fail open).
     pub fn on_storage_error(mut self, policy: OnStorageError) -> Self {
-        self.on_storage_error = policy;
+        self.settings.on_storage_error = policy;
         self
     }
 
@@ -128,7 +164,7 @@ impl TierLimitLayer {
         mut self,
         f: impl Fn(&str, &str, &RateLimited) + Send + Sync + 'static,
     ) -> Self {
-        self.on_limited = Some(Arc::new(f));
+        self.settings.on_limited = Some(Arc::new(f));
         self
     }
 
@@ -149,7 +185,7 @@ impl TierLimitLayer {
     ///         Response::builder()
     ///             .status(StatusCode::TOO_MANY_REQUESTS)
     ///             .header("Content-Type", "application/problem+json")
-    ///             .header("Retry-After", limited.retry_after.as_secs())
+    ///             .header("Retry-After", limited.retry_after_secs())
     ///             .body(format!(r#"{{"type":"rate_limit","tier":"{}"}}"#, tier))
     ///             .unwrap()
     ///     });
@@ -158,7 +194,61 @@ impl TierLimitLayer {
         mut self,
         f: impl Fn(&str, &str, &RateLimited) -> Response<String> + Send + Sync + 'static,
     ) -> Self {
-        self.rate_limited_response = Some(Arc::new(f));
+        self.settings.rate_limited_response = Some(Arc::new(f));
+        self
+    }
+
+    /// Compute the cost of each request inside the middleware.
+    ///
+    /// The closure receives the request's method, URI, headers and
+    /// extensions. A [`TierCost`](crate::TierCost) already in the extensions,
+    /// from a [`tier_cost`](crate::tier_cost) layer wrapped *around* this one,
+    /// takes precedence. Without either, a request costs 1.
+    ///
+    /// Use this instead of per-route `tier_cost` layers when the rate limiter
+    /// is added with axum's `Router::layer`: route layers run *inside* it, too
+    /// late to set the cost. Axum's `MatchedPath` extension is available here,
+    /// so routes with parameters can be matched by their pattern.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use tower_rate_tier::{RateTier, Quota, TierLimitLayer};
+    /// # let rate_tier = RateTier::builder().tier("free", Quota::per_hour(100)).build();
+    /// let layer = TierLimitLayer::new(rate_tier).cost_fn(|req| match req.uri.path() {
+    ///     "/api/search" => 5,
+    ///     "/api/export" => 20,
+    ///     "/health" => 0,
+    ///     _ => 1,
+    /// });
+    /// ```
+    pub fn cost_fn(
+        mut self,
+        f: impl Fn(&http::request::Parts) -> u32 + Send + Sync + 'static,
+    ) -> Self {
+        self.settings.cost_fn = Some(Arc::new(f));
+        self
+    }
+
+    /// Set a callback invoked for every [`LimitEvent`], such as a storage
+    /// backend failure.
+    ///
+    /// The callback must be non-blocking (sync). Use it to log or count
+    /// problems that the policies otherwise handle quietly, for example a
+    /// fail-open [`OnStorageError::Allow`] while the backend is down.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use tower_rate_tier::{LimitEvent, RateTier, Quota, TierLimitLayer};
+    /// # let rate_tier = RateTier::builder().tier("free", Quota::per_hour(100)).build();
+    /// let layer = TierLimitLayer::new(rate_tier).on_event(|event| match event {
+    ///     LimitEvent::StorageError { error, .. } => eprintln!("rate limit storage failed: {error}"),
+    ///     _ => {}
+    /// });
+    /// ```
+    pub fn on_event(mut self, f: impl Fn(&LimitEvent<'_>) + Send + Sync + 'static) -> Self {
+        self.settings.on_event = Some(Arc::new(f));
         self
     }
 
@@ -177,10 +267,7 @@ impl TierLimitLayer {
     pub fn buffer_body(self) -> crate::buffered::BufferedTierLimitLayer {
         crate::buffered::BufferedTierLimitLayer {
             rate_tier: self.rate_tier,
-            identifier: self.identifier,
-            on_storage_error: self.on_storage_error,
-            on_limited: self.on_limited,
-            rate_limited_response: self.rate_limited_response,
+            settings: self.settings,
             max_body_size: 64 * 1024,
         }
     }
@@ -193,10 +280,7 @@ impl<S> Layer<S> for TierLimitLayer {
         TierLimitService {
             inner,
             rate_tier: self.rate_tier.clone(),
-            identifier: self.identifier.clone(),
-            on_storage_error: self.on_storage_error,
-            on_limited: self.on_limited.clone(),
-            rate_limited_response: self.rate_limited_response.clone(),
+            settings: Arc::new(self.settings.clone()),
         }
     }
 }

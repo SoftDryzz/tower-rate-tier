@@ -3,25 +3,46 @@ use std::time::Duration;
 use crate::quota::Nanos;
 
 /// Information about the current rate limit state after a successful check.
-#[derive(Debug, Clone, Copy)]
+///
+/// Times are relative to the moment of the check, so they do not depend on
+/// which clock the storage backend used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RateLimitInfo {
     /// Maximum number of requests allowed in the window.
     pub limit: u32,
     /// Remaining requests before rate limiting kicks in.
     pub remaining: u32,
-    /// Absolute time (in nanos) when the quota fully replenishes.
-    pub reset_at: Nanos,
+    /// Time until the quota fully replenishes.
+    pub reset_after: Duration,
 }
 
 /// Returned when a request is denied due to rate limiting.
-#[derive(Debug, Clone, Copy)]
+///
+/// Times are relative to the moment of the check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RateLimited {
     /// Maximum number of requests allowed in the window.
     pub limit: u32,
     /// How long the caller should wait before retrying.
     pub retry_after: Duration,
-    /// Absolute time (in nanos) when the quota fully replenishes.
-    pub reset_at: Nanos,
+    /// Time until the quota fully replenishes. The rejected request is not
+    /// counted, since it consumed nothing.
+    pub reset_after: Duration,
+}
+
+impl RateLimited {
+    /// [`retry_after`](Self::retry_after) in whole seconds, rounded up, for a
+    /// `Retry-After` header. A client that waits this long is allowed;
+    /// rounding down would make it retry too early.
+    pub fn retry_after_secs(&self) -> u64 {
+        ceil_secs(self.retry_after)
+    }
+}
+
+/// Whole seconds, rounded up.
+pub(crate) fn ceil_secs(duration: Duration) -> u64 {
+    let round_up = u64::from(duration.subsec_nanos() > 0);
+    duration.as_secs().saturating_add(round_up)
 }
 
 /// Perform a GCRA (Generic Cell Rate Algorithm) check.
@@ -34,11 +55,20 @@ pub struct RateLimited {
 /// * `burst_offset` - Maximum burst window (emission_interval * max_burst).
 /// * `cost` - Number of cells this request consumes. A cost of `0` means the
 ///   request is free (no quota consumed) and is always allowed.
+///   A cost above the maximum burst is never allowed; [`RateTier`](crate::RateTier)
+///   rejects it with [`CheckError::CostExceedsLimit`](crate::CheckError::CostExceedsLimit)
+///   before storage is reached.
 ///
 /// # Returns
 ///
 /// * `Ok((new_tat, info))` - Request is allowed. `new_tat` should be stored.
 /// * `Err(limited)` - Request is denied.
+///
+/// # Panics
+///
+/// Panics if `emission_interval` is 0. Every [`Quota`](crate::Quota) built by
+/// its constructors (other than [`Quota::unlimited`](crate::Quota::unlimited),
+/// which is never checked) has a non-zero interval.
 pub fn check_gcra(
     tat: Option<Nanos>,
     now: Nanos,
@@ -47,21 +77,21 @@ pub fn check_gcra(
     cost: u32,
 ) -> Result<(Nanos, RateLimitInfo), RateLimited> {
     let limit = (burst_offset / emission_interval) as u32;
-    let tat = tat.unwrap_or(now);
+    // An expired TAT behaves like no TAT at all.
+    let current_tat = tat.unwrap_or(now).max(now);
     let increment = emission_interval.saturating_mul(cost as Nanos);
-    let new_tat = tat.max(now) + increment;
+    let new_tat = current_tat.saturating_add(increment);
     let allow_at = new_tat.saturating_sub(burst_offset);
 
     if allow_at > now {
-        let retry_after_nanos = allow_at - now;
         return Err(RateLimited {
             limit,
-            retry_after: Duration::from_nanos(retry_after_nanos),
-            reset_at: new_tat,
+            retry_after: Duration::from_nanos(allow_at - now),
+            reset_after: Duration::from_nanos(current_tat - now),
         });
     }
 
-    let diff = burst_offset.saturating_sub(new_tat.saturating_sub(now));
+    let diff = burst_offset.saturating_sub(new_tat - now);
     let remaining = (diff / emission_interval) as u32;
 
     Ok((
@@ -69,7 +99,7 @@ pub fn check_gcra(
         RateLimitInfo {
             limit,
             remaining,
-            reset_at: new_tat,
+            reset_after: Duration::from_nanos(new_tat - now),
         },
     ))
 }

@@ -9,7 +9,7 @@ use tower_rate_tier::clock::FakeClock;
 use tower_rate_tier::gcra::check_gcra;
 use tower_rate_tier::identifier::{TierIdentifier, TierIdentity};
 use tower_rate_tier::storage::memory::MemoryStorage;
-use tower_rate_tier::storage::Storage;
+use tower_rate_tier::storage::{Storage, StorageKey};
 use tower_rate_tier::{Quota, RateTier, TierLimitLayer};
 use tower_service::Service;
 
@@ -95,7 +95,12 @@ fn bench_storage_single_key(c: &mut Criterion) {
             runtime.block_on(async {
                 let _ = black_box(
                     storage
-                        .check_and_update("user1:free", &quota, 1, 1_000_000_000)
+                        .check_and_update(
+                            StorageKey::new("user1", "free"),
+                            &quota,
+                            1,
+                            1_000_000_000,
+                        )
                         .await,
                 );
             });
@@ -111,9 +116,9 @@ fn bench_storage_many_keys(c: &mut Criterion) {
     // Pre-populate 10,000 keys
     runtime.block_on(async {
         for i in 0..10_000 {
-            let key = format!("user{}:free", i);
+            let user = format!("user{}", i);
             let _ = storage
-                .check_and_update(&key, &quota, 1, 1_000_000_000)
+                .check_and_update(StorageKey::new(&user, "free"), &quota, 1, 1_000_000_000)
                 .await;
         }
     });
@@ -121,12 +126,12 @@ fn bench_storage_many_keys(c: &mut Criterion) {
     c.bench_function("storage_check_10k_keys", |b| {
         let mut i = 0u64;
         b.iter(|| {
-            let key = format!("user{}:free", i % 10_000);
+            let user = format!("user{}", i % 10_000);
             i += 1;
             runtime.block_on(async {
                 let _ = black_box(
                     storage
-                        .check_and_update(&key, &quota, 1, 1_000_000_000)
+                        .check_and_update(StorageKey::new(&user, "free"), &quota, 1, 1_000_000_000)
                         .await,
                 );
             });
