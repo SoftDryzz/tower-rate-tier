@@ -10,6 +10,8 @@ pub(crate) mod check;
 pub mod clock;
 /// Cost extraction: decide how many tokens each request consumes.
 pub mod cost;
+/// Events reported while rate limiting, for logging and metrics.
+pub mod event;
 /// Background garbage collection for expired rate-limit entries.
 pub mod gc;
 /// Generic Cell Rate Algorithm (GCRA) implementation.
@@ -40,6 +42,7 @@ pub mod tier;
 pub mod buffered;
 
 pub use cost::{tier_cost, TierCost};
+pub use event::LimitEvent;
 pub use gcra::{RateLimitInfo, RateLimited};
 pub use identifier::{TierIdentifier, TierIdentity};
 pub use layer::TierLimitLayer;

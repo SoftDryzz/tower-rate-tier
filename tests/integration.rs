@@ -338,3 +338,73 @@ async fn layer_and_programmatic_checks_share_one_rate_tier() {
     let resp = svc.call(build_request(None)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
 }
+
+/// Storage backend that always fails, like an unreachable Redis.
+struct FailingStorage;
+
+impl tower_rate_tier::storage::Storage for FailingStorage {
+    fn check_and_update<'a>(
+        &'a self,
+        _key: tower_rate_tier::StorageKey<'a>,
+        _quota: &'a Quota,
+        _cost: u32,
+        _now: tower_rate_tier::Nanos,
+    ) -> tower_rate_tier::storage::StorageFuture<'a> {
+        let error = tower_rate_tier::StorageError(Box::from("connection refused"));
+        Box::pin(std::future::ready(Err(error)))
+    }
+}
+
+fn failing_layer(
+    policy: tower_rate_tier::OnStorageError,
+    events: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) -> TierLimitLayer {
+    let rate_tier = RateTier::builder()
+        .tier("free", Quota::per_second(1))
+        .storage(std::sync::Arc::new(FailingStorage))
+        .build();
+    TierLimitLayer::new(rate_tier)
+        .identifier_fn(|_| Some(TierIdentity::new("u1", "free")))
+        .on_storage_error(policy)
+        .on_event(move |event| {
+            if let tower_rate_tier::LimitEvent::StorageError {
+                user_id,
+                tier,
+                error,
+            } = event
+            {
+                events
+                    .lock()
+                    .unwrap()
+                    .push(format!("{user_id}/{tier}: {error}"));
+            }
+        })
+}
+
+#[tokio::test]
+async fn storage_error_is_reported_and_fails_closed_when_denied() {
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut svc =
+        failing_layer(tower_rate_tier::OnStorageError::Deny, events.clone()).layer(OkService);
+
+    let resp = svc.call(build_request(None)).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        *events.lock().unwrap(),
+        ["u1/free: storage error: connection refused"]
+    );
+}
+
+#[tokio::test]
+async fn storage_error_is_reported_and_fails_open_by_default() {
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut svc =
+        failing_layer(tower_rate_tier::OnStorageError::default(), events.clone()).layer(OkService);
+
+    let resp = svc.call(build_request(None)).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(!resp.headers().contains_key("x-ratelimit-limit"));
+    assert_eq!(events.lock().unwrap().len(), 1);
+}

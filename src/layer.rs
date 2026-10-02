@@ -4,6 +4,7 @@ use std::sync::Arc;
 use http::{HeaderMap, Response};
 use tower_layer::Layer;
 
+use crate::event::LimitEvent;
 use crate::gcra::RateLimited;
 use crate::identifier::{ClosureIdentifier, TierIdentifier, TierIdentity};
 use crate::on_storage_error::OnStorageError;
@@ -19,6 +20,9 @@ pub type OnLimitedFn = dyn Fn(&str, &str, &RateLimited) + Send + Sync;
 ///
 /// Receives `(user_id, tier_name, rate_limited_info)` and returns a `Response<String>`.
 pub type RateLimitedResponseFn = dyn Fn(&str, &str, &RateLimited) -> Response<String> + Send + Sync;
+
+/// Callback invoked for every [`LimitEvent`].
+pub type OnEventFn = dyn for<'a> Fn(&LimitEvent<'a>) + Send + Sync;
 
 /// Tower layer for tier-based rate limiting.
 ///
@@ -54,6 +58,7 @@ pub(crate) struct Settings {
     pub(crate) on_storage_error: OnStorageError,
     pub(crate) on_limited: Option<Arc<OnLimitedFn>>,
     pub(crate) rate_limited_response: Option<Arc<RateLimitedResponseFn>>,
+    pub(crate) on_event: Option<Arc<OnEventFn>>,
 }
 
 impl fmt::Debug for Settings {
@@ -65,6 +70,7 @@ impl fmt::Debug for Settings {
                 "rate_limited_response",
                 &self.rate_limited_response.is_some(),
             )
+            .field("on_event", &self.on_event.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -101,6 +107,7 @@ impl TierLimitLayer {
                 on_storage_error: OnStorageError::default(),
                 on_limited: None,
                 rate_limited_response: None,
+                on_event: None,
             },
         }
     }
@@ -182,6 +189,28 @@ impl TierLimitLayer {
         f: impl Fn(&str, &str, &RateLimited) -> Response<String> + Send + Sync + 'static,
     ) -> Self {
         self.settings.rate_limited_response = Some(Arc::new(f));
+        self
+    }
+
+    /// Set a callback invoked for every [`LimitEvent`], such as a storage
+    /// backend failure.
+    ///
+    /// The callback must be non-blocking (sync). Use it to log or count
+    /// problems that the policies otherwise handle quietly, for example a
+    /// fail-open [`OnStorageError::Allow`] while the backend is down.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use tower_rate_tier::{LimitEvent, RateTier, Quota, TierLimitLayer};
+    /// # let rate_tier = RateTier::builder().tier("free", Quota::per_hour(100)).build();
+    /// let layer = TierLimitLayer::new(rate_tier).on_event(|event| match event {
+    ///     LimitEvent::StorageError { error, .. } => eprintln!("rate limit storage failed: {error}"),
+    ///     _ => {}
+    /// });
+    /// ```
+    pub fn on_event(mut self, f: impl Fn(&LimitEvent<'_>) + Send + Sync + 'static) -> Self {
+        self.settings.on_event = Some(Arc::new(f));
         self
     }
 

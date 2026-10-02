@@ -7,6 +7,7 @@ use std::time::SystemTime;
 
 use http::Response;
 
+use crate::event::LimitEvent;
 use crate::gcra::RateLimitInfo;
 use crate::identifier::TierIdentity;
 use crate::layer::Settings;
@@ -82,9 +83,18 @@ pub(crate) fn process_result(
             };
             CheckOutcome::Deny(resp)
         }
-        Err(_storage_err) => match settings.on_storage_error {
-            OnStorageError::Allow => CheckOutcome::PassThrough,
-            OnStorageError::Deny => CheckOutcome::Deny(response::storage_error_response()),
-        },
+        Err(error) => {
+            if let Some(cb) = &settings.on_event {
+                cb(&LimitEvent::StorageError {
+                    user_id,
+                    tier: tier_name,
+                    error: &error,
+                });
+            }
+            match settings.on_storage_error {
+                OnStorageError::Allow => CheckOutcome::PassThrough,
+                OnStorageError::Deny => CheckOutcome::Deny(response::storage_error_response()),
+            }
+        }
     }
 }

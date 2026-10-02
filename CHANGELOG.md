@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Added
 
 - `Debug` implementations for all public types (`MemoryStorage` shows only its entry count, never user keys)
+- `TierLimitLayer::on_event()` callback and `LimitEvent` enum, starting with `LimitEvent::StorageError`, so storage failures are visible even when the request fails open
 - `TierLimitLayer::new()` also accepts an `Arc<RateTier>`, so the middleware and programmatic `RateTier::check()` calls can share one set of limits
 
 ### Changed
