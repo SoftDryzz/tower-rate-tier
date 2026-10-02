@@ -29,7 +29,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tower-rate-tier = "0.2"
+tower-rate-tier = "0.3"
 ```
 
 ### Define Tiers
@@ -141,10 +141,10 @@ answered with `403 Forbidden` and no `Retry-After`, without touching storage.
 
 ```toml
 # Body-based identification (opt-in, buffers request body)
-tower-rate-tier = { version = "0.2", features = ["buffered-body"] }
+tower-rate-tier = { version = "0.3", features = ["buffered-body"] }
 
 # Limits shared by every instance through Redis
-tower-rate-tier = { version = "0.2", features = ["redis"] }
+tower-rate-tier = { version = "0.3", features = ["redis"] }
 ```
 
 ## Redis: Limits Shared by Every Instance
