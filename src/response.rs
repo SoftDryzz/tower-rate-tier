@@ -1,3 +1,5 @@
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use http::header::HeaderValue;
 use http::{Response, StatusCode};
 
@@ -5,28 +7,29 @@ use crate::gcra::{RateLimitInfo, RateLimited};
 
 /// Inject `X-RateLimit-*` headers into a successful response.
 ///
-/// `unix_offset_nanos` is added to `reset_at` to produce a Unix timestamp
-/// for the `X-RateLimit-Reset` header.
-pub fn inject_headers<B>(response: &mut Response<B>, info: &RateLimitInfo, unix_offset_nanos: u64) {
+/// `now` is the current wall-clock time; `X-RateLimit-Reset` is the Unix
+/// timestamp `now + reset_after`, rounded up to whole seconds.
+pub fn inject_headers<B>(response: &mut Response<B>, info: &RateLimitInfo, now: SystemTime) {
     let headers = response.headers_mut();
     headers.insert("X-RateLimit-Limit", HeaderValue::from(info.limit));
     headers.insert("X-RateLimit-Remaining", HeaderValue::from(info.remaining));
     headers.insert(
         "X-RateLimit-Reset",
-        reset_header_value(info.reset_at, unix_offset_nanos),
+        reset_header_value(info.reset_after, now),
     );
 }
 
 /// Build a 429 Too Many Requests response with JSON body and rate limit headers.
 ///
-/// `unix_offset_nanos` is added to `reset_at` to produce a Unix timestamp
-/// for the `X-RateLimit-Reset` header.
+/// `Retry-After` and the body's `retry_after` are the same value, rounded up
+/// to whole seconds so a client that waits that long is allowed. `now` is the
+/// current wall-clock time, used for `X-RateLimit-Reset`.
 pub fn rate_limited_response(
     limited: &RateLimited,
     tier: &str,
-    unix_offset_nanos: u64,
+    now: SystemTime,
 ) -> Response<String> {
-    let retry_after_secs = limited.retry_after.as_secs();
+    let retry_after_secs = ceil_secs(limited.retry_after);
 
     let escaped_tier = escape_json_string(tier);
     let body = format!(
@@ -34,7 +37,7 @@ pub fn rate_limited_response(
         escaped_tier, retry_after_secs
     );
 
-    let mut response = Response::builder()
+    Response::builder()
         .status(StatusCode::TOO_MANY_REQUESTS)
         .header("Content-Type", "application/json")
         .header("Retry-After", retry_after_secs)
@@ -42,19 +45,10 @@ pub fn rate_limited_response(
         .header("X-RateLimit-Remaining", 0u32)
         .header(
             "X-RateLimit-Reset",
-            reset_header_value(limited.reset_at, unix_offset_nanos),
+            reset_header_value(limited.reset_after, now),
         )
         .body(body)
-        .unwrap();
-
-    // Ensure Retry-After is at least 1 second when there's a non-zero duration
-    if retry_after_secs == 0 && !limited.retry_after.is_zero() {
-        response
-            .headers_mut()
-            .insert("Retry-After", HeaderValue::from(1u64));
-    }
-
-    response
+        .unwrap()
 }
 
 /// Build a response for when the identifier cannot determine the user/tier
@@ -76,14 +70,19 @@ pub fn storage_error_response() -> Response<String> {
         .unwrap()
 }
 
-/// Convert an internal `reset_at` value to a Unix-timestamp `HeaderValue`.
-///
-/// Adds `unix_offset_nanos` to convert from process-local epoch to Unix epoch,
-/// then divides by 1e9 to get seconds.
-fn reset_header_value(reset_at_nanos: u64, unix_offset_nanos: u64) -> HeaderValue {
-    let unix_nanos = reset_at_nanos.saturating_add(unix_offset_nanos);
-    let secs = unix_nanos / 1_000_000_000;
+/// Unix timestamp, in whole seconds rounded up, of `now + reset_after`.
+fn reset_header_value(reset_after: Duration, now: SystemTime) -> HeaderValue {
+    let secs = now
+        .checked_add(reset_after)
+        .and_then(|reset| reset.duration_since(UNIX_EPOCH).ok())
+        .map_or(u64::MAX, ceil_secs);
     HeaderValue::from(secs)
+}
+
+/// Whole seconds, rounded up.
+fn ceil_secs(duration: Duration) -> u64 {
+    let round_up = u64::from(duration.subsec_nanos() > 0);
+    duration.as_secs().saturating_add(round_up)
 }
 
 /// Build a 400 Bad Request response for body read errors.
@@ -115,4 +114,57 @@ fn escape_json_string(s: &str) -> String {
         }
     }
     escaped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn limited(retry_after: Duration) -> RateLimited {
+        RateLimited {
+            limit: 1,
+            retry_after,
+            reset_after: Duration::from_secs(60),
+        }
+    }
+
+    #[test]
+    fn retry_after_is_rounded_up_in_header_and_body() {
+        let resp =
+            rate_limited_response(&limited(Duration::from_millis(29_500)), "free", UNIX_EPOCH);
+
+        assert_eq!(resp.headers()["retry-after"], "30");
+        assert!(
+            resp.body().contains(r#""retry_after":30"#),
+            "{}",
+            resp.body()
+        );
+    }
+
+    #[test]
+    fn sub_second_retry_after_is_one_in_header_and_body() {
+        let resp = rate_limited_response(&limited(Duration::from_millis(500)), "free", UNIX_EPOCH);
+
+        assert_eq!(resp.headers()["retry-after"], "1");
+        assert!(
+            resp.body().contains(r#""retry_after":1"#),
+            "{}",
+            resp.body()
+        );
+    }
+
+    #[test]
+    fn reset_header_is_unix_time_rounded_up() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_000);
+        let info = RateLimitInfo {
+            limit: 10,
+            remaining: 9,
+            reset_after: Duration::from_millis(2_500),
+        };
+        let mut resp = Response::new(());
+
+        inject_headers(&mut resp, &info, now);
+
+        assert_eq!(resp.headers()["x-ratelimit-reset"], "1003");
+    }
 }

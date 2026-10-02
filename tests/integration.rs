@@ -259,3 +259,60 @@ async fn recovery_after_time_elapses() {
     let resp = svc.call(build_request(Some("user1"))).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn client_that_waits_retry_after_is_allowed() {
+    let clock = FakeClock::new();
+    let rate_tier = RateTier::builder()
+        .tier("free", Quota::per_minute(1))
+        .default_tier("free")
+        .clock(clock.clone())
+        .build();
+    let mut svc = TierLimitLayer::new(rate_tier)
+        .identifier_fn(|_| Some(TierIdentity::new("u1", "free")))
+        .layer(OkService);
+
+    let resp = svc.call(build_request(None)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Half a second into a second: a rounded-down Retry-After is too short.
+    clock.advance(Duration::from_millis(30_500));
+    let resp = svc.call(build_request(None)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    let wait: u64 = resp.headers()["retry-after"]
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    clock.advance(Duration::from_secs(wait));
+    let resp = svc.call(build_request(None)).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "waited Retry-After = {wait}s"
+    );
+}
+
+#[tokio::test]
+async fn reset_header_is_a_unix_timestamp_near_now() {
+    let layer = make_layer(FakeClock::new());
+    let mut svc = layer.layer(OkService);
+
+    let before = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let resp = svc.call(build_request(Some("user1"))).await.unwrap();
+    let reset: u64 = resp.headers()["x-ratelimit-reset"]
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    // free = 2/sec, so one request replenishes within half a second.
+    assert!(
+        (before..=before + 2).contains(&reset),
+        "reset={reset} now={before}"
+    );
+}

@@ -3,6 +3,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::SystemTime;
 
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
@@ -214,7 +215,9 @@ where
                 .check_and_update(&storage_key, quota, cost, now)
                 .await;
 
-            let unix_offset = rate_tier.clock().unix_offset_nanos();
+            // Wall-clock time of the check; the durations in the result are
+            // relative to it.
+            let checked_at = SystemTime::now();
 
             match check::process_result(
                 result,
@@ -223,12 +226,12 @@ where
                 on_storage_error,
                 &on_limited,
                 &rate_limited_response_fn,
-                unix_offset,
+                checked_at,
             ) {
                 CheckOutcome::Allow(info) => {
                     let req = Request::from_parts(parts, Full::new(body_bytes));
                     let mut resp = inner.call(req).await?;
-                    response::inject_headers(&mut resp, &info, unix_offset);
+                    response::inject_headers(&mut resp, &info, checked_at);
                     Ok(resp)
                 }
                 CheckOutcome::Deny(resp) => Ok(resp.map(Into::into)),

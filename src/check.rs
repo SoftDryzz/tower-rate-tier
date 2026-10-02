@@ -4,6 +4,7 @@
 #![allow(clippy::result_large_err)]
 
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use http::Response;
 
@@ -69,7 +70,7 @@ pub(crate) fn process_result(
     on_storage_error: OnStorageError,
     on_limited: &Option<Arc<OnLimitedFn>>,
     rate_limited_response_fn: &Option<Arc<RateLimitedResponseFn>>,
-    unix_offset: u64,
+    now: SystemTime,
 ) -> CheckOutcome {
     match result {
         Ok(Ok(info)) => CheckOutcome::Allow(info),
@@ -80,7 +81,7 @@ pub(crate) fn process_result(
             let resp = if let Some(ref builder) = rate_limited_response_fn {
                 builder(user_id, tier_name, &limited)
             } else {
-                response::rate_limited_response(&limited, tier_name, unix_offset)
+                response::rate_limited_response(&limited, tier_name, now)
             };
             CheckOutcome::Deny(resp)
         }

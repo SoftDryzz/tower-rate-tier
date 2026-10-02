@@ -3,25 +3,31 @@ use std::time::Duration;
 use crate::quota::Nanos;
 
 /// Information about the current rate limit state after a successful check.
-#[derive(Debug, Clone, Copy)]
+///
+/// Times are relative to the moment of the check, so they do not depend on
+/// which clock the storage backend used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RateLimitInfo {
     /// Maximum number of requests allowed in the window.
     pub limit: u32,
     /// Remaining requests before rate limiting kicks in.
     pub remaining: u32,
-    /// Absolute time (in nanos) when the quota fully replenishes.
-    pub reset_at: Nanos,
+    /// Time until the quota fully replenishes.
+    pub reset_after: Duration,
 }
 
 /// Returned when a request is denied due to rate limiting.
-#[derive(Debug, Clone, Copy)]
+///
+/// Times are relative to the moment of the check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RateLimited {
     /// Maximum number of requests allowed in the window.
     pub limit: u32,
     /// How long the caller should wait before retrying.
     pub retry_after: Duration,
-    /// Absolute time (in nanos) when the quota fully replenishes.
-    pub reset_at: Nanos,
+    /// Time until the quota fully replenishes. The rejected request is not
+    /// counted, since it consumed nothing.
+    pub reset_after: Duration,
 }
 
 /// Perform a GCRA (Generic Cell Rate Algorithm) check.
@@ -53,21 +59,21 @@ pub fn check_gcra(
     cost: u32,
 ) -> Result<(Nanos, RateLimitInfo), RateLimited> {
     let limit = (burst_offset / emission_interval) as u32;
-    let tat = tat.unwrap_or(now);
+    // An expired TAT behaves like no TAT at all.
+    let current_tat = tat.unwrap_or(now).max(now);
     let increment = emission_interval.saturating_mul(cost as Nanos);
-    let new_tat = tat.max(now).saturating_add(increment);
+    let new_tat = current_tat.saturating_add(increment);
     let allow_at = new_tat.saturating_sub(burst_offset);
 
     if allow_at > now {
-        let retry_after_nanos = allow_at - now;
         return Err(RateLimited {
             limit,
-            retry_after: Duration::from_nanos(retry_after_nanos),
-            reset_at: new_tat,
+            retry_after: Duration::from_nanos(allow_at - now),
+            reset_after: Duration::from_nanos(current_tat - now),
         });
     }
 
-    let diff = burst_offset.saturating_sub(new_tat.saturating_sub(now));
+    let diff = burst_offset.saturating_sub(new_tat - now);
     let remaining = (diff / emission_interval) as u32;
 
     Ok((
@@ -75,7 +81,7 @@ pub fn check_gcra(
         RateLimitInfo {
             limit,
             remaining,
-            reset_at: new_tat,
+            reset_after: Duration::from_nanos(new_tat - now),
         },
     ))
 }

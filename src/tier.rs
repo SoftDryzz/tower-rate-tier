@@ -173,7 +173,7 @@ impl RateTier {
             return Ok(Ok(RateLimitInfo {
                 limit: 0,
                 remaining: 0,
-                reset_at: 0,
+                reset_after: Duration::ZERO,
             }));
         }
 
