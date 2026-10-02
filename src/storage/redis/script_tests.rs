@@ -237,20 +237,28 @@ fn run_script(
     fake: &Rc<RefCell<FakeRedis>>,
     call: &ScriptCall,
 ) -> Result<Reply, String> {
+    let argv = [
+        call.now.clone(),
+        call.emission_interval.to_string(),
+        call.burst_offset.to_string(),
+        call.cost.to_string(),
+    ];
+    run_with_args(source, fake, &call.key, &argv)
+}
+
+/// Runs `source` once with any key and arguments, including malformed ones.
+fn run_with_args(
+    source: &str,
+    fake: &Rc<RefCell<FakeRedis>>,
+    key: &str,
+    argv: &[String],
+) -> Result<Reply, String> {
     let libs = StdLib::TABLE | StdLib::STRING | StdLib::MATH;
     let lua = Lua::new_with(libs, LuaOptions::default()).map_err(|e| e.to_string())?;
     let setup = || -> mlua::Result<()> {
         let globals = lua.globals();
-        globals.raw_set("KEYS", lua.create_sequence_from([call.key.clone()])?)?;
-        globals.raw_set(
-            "ARGV",
-            lua.create_sequence_from([
-                call.now.clone(),
-                call.emission_interval.to_string(),
-                call.burst_offset.to_string(),
-                call.cost.to_string(),
-            ])?,
-        )?;
+        globals.raw_set("KEYS", lua.create_sequence_from([key.to_owned()])?)?;
+        globals.raw_set("ARGV", lua.create_sequence_from(argv.to_vec())?)?;
         globals.raw_set("redis", redis_api(&lua, fake)?)?;
         // Redis refuses scripts that create or read undeclared globals.
         lua.load(
@@ -527,6 +535,19 @@ fn gcra_script_matches_check_gcra_on_random_sequences() {
                     actual, expected,
                     "server_time={server_time} quota={quota:?} step={step} cost={cost}"
                 );
+
+                // No leaks: every write expires, and only KEYS[1] is ever touched.
+                let key = storage.redis_key(USER);
+                let state = fake.borrow();
+                assert!(
+                    state
+                        .sets
+                        .iter()
+                        .all(|(k, _, px)| *k == key && px.is_some()),
+                    "step {step}: {:?}",
+                    state.sets
+                );
+                assert!(state.data.keys().all(|k| *k == key), "step {step}");
             }
         }
     }
@@ -599,4 +620,103 @@ fn gcra_script_writes_nothing_when_it_denies() {
         .expect_err("the second request is over the burst");
 
     assert_eq!(fake.borrow().sets.len(), writes_before);
+}
+
+fn fresh() -> Rc<RefCell<FakeRedis>> {
+    Rc::new(RefCell::new(FakeRedis::default()))
+}
+
+fn strings(args: &[&str]) -> Vec<String> {
+    args.iter().map(|arg| (*arg).to_owned()).collect()
+}
+
+#[test]
+fn gcra_script_rejects_malformed_arguments_without_writing() {
+    // Plain keys hold the user id; errors must never echo it.
+    let secret = "sk_live_secret";
+    let key = RedisStorage::new(())
+        .plain_user_ids()
+        .redis_key(StorageKey::new(secret, "free"));
+    let cases: &[(&str, &[&str])] = &[
+        ("missing argument", &["", "250000", "1000000"]),
+        ("zero interval", &["", "0", "1000000", "1"]),
+        ("text interval", &["", "abc", "1000000", "1"]),
+        ("fractional interval", &["", "1.5", "1000000", "1"]),
+        ("negative cost", &["", "250000", "1000000", "-1"]),
+        ("NaN cost", &["", "250000", "1000000", "nan"]),
+        ("burst below interval", &["", "250000", "1000", "1"]),
+        ("infinite time", &["inf", "250000", "1000000", "1"]),
+        (
+            "time at 2^53",
+            &["9007199254740992", "250000", "1000000", "1"],
+        ),
+        ("negative time", &["-1", "250000", "1000000", "1"]),
+    ];
+    for (label, argv) in cases {
+        let fake = fresh();
+
+        let err = run_with_args(GCRA_SCRIPT, &fake, &key, &strings(argv)).expect_err(label);
+
+        assert!(err.starts_with("ERR tower-rate-tier: "), "{label}: {err}");
+        assert!(
+            !err.contains(secret),
+            "{label}: the error leaks the key: {err}"
+        );
+        assert!(
+            fake.borrow().sets.is_empty(),
+            "{label}: {:?}",
+            fake.borrow().sets
+        );
+    }
+}
+
+#[test]
+fn gcra_script_refuses_values_beyond_the_exact_range() {
+    let fake = fresh();
+    let key = RedisStorage::new(()).redis_key(USER);
+    // Ten microseconds below 2^53, plus a 100 µs interval, is no longer exact.
+    let argv = strings(&["9007199254740982", "100", "100", "1"]);
+
+    let err = run_with_args(GCRA_SCRIPT, &fake, &key, &argv).expect_err("must refuse");
+
+    assert!(err.starts_with("ERR tower-rate-tier: "), "{err}");
+    assert!(fake.borrow().sets.is_empty());
+}
+
+#[test]
+fn gcra_script_heals_a_corrupt_stored_value() {
+    let fake = fresh();
+    let storage = RedisStorage::new(()).use_client_clock();
+    let key = storage.redis_key(USER);
+    fake.borrow_mut()
+        .data
+        .insert(key.clone(), ("not a number".to_owned(), None));
+
+    let info = script_check(&fake, &storage, &Quota::per_second(4), 1, ms(1_000))
+        .expect("a corrupt value must not fail every request")
+        .expect("it counts as a fresh bucket");
+
+    assert_eq!(info.remaining, 3);
+    let state = fake.borrow();
+    let (value, expiry) = &state.data[&key];
+    assert_eq!(value, "1250000");
+    assert!(expiry.is_some(), "the healed value must expire");
+}
+
+#[test]
+fn gcra_script_caps_the_wait_when_the_clock_moves_back() {
+    let fake = fresh();
+    let storage = RedisStorage::new(()).use_client_clock();
+    // A TAT 100 s ahead, as left by a server whose clock was ahead.
+    fake.borrow_mut()
+        .data
+        .insert(storage.redis_key(USER), ("101000000".to_owned(), None));
+
+    let limited = script_check(&fake, &storage, &Quota::per_second(4), 1, ms(1_000))
+        .expect("script ran")
+        .expect_err("the bucket counts as full");
+
+    // Never longer than a full bucket: one interval to retry, one window to reset.
+    assert_eq!(limited.retry_after, Duration::from_millis(250));
+    assert_eq!(limited.reset_after, Duration::from_secs(1));
 }
