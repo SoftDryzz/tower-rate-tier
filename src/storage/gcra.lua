@@ -45,9 +45,10 @@
 --   * Malformed arguments, or values past the exact range of Lua numbers,
 --     return an error reply without writing. The message never includes the
 --     key or the arguments, since plain keys contain user ids.
---   * A stored value that is not a number counts as a fresh bucket and is
---     overwritten, so a corrupted key heals itself instead of failing every
---     request for that user.
+--   * A stored value that is not an integer, or a key holding another type
+--     (WRONGTYPE), counts as a fresh bucket and is overwritten, so a corrupted
+--     key heals itself instead of failing every request for that user. Keys
+--     under the RedisStorage prefix belong to it.
 --   * A TAT further ahead than one full burst can only come from a clock that
 --     moved back (for example, a failover to a replica whose clock is behind).
 --     It is capped at a full bucket and the cap is stored, even when the
@@ -112,8 +113,14 @@ if now == nil then
   return fail("invalid time")
 end
 
--- Not an integer (this includes NaN) means a corrupted value: start fresh.
-local tat = tonumber(redis.call("GET", KEYS[1]))
+-- A key of another type makes GET fail; pcall turns that into an error
+-- table, which tonumber() reads as nil. Not an integer (this includes NaN)
+-- means a corrupted value too: start fresh.
+local stored = redis.pcall("GET", KEYS[1])
+if type(stored) == "table" then
+  stored = nil
+end
+local tat = tonumber(stored)
 local capped = false
 if tat == nil or tat ~= math.floor(tat) or tat < now then
   tat = now

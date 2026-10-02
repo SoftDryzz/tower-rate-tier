@@ -17,7 +17,7 @@
 //! `tests/redis_tests.rs` runs the same script against a real Redis.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use mlua::{Lua, LuaOptions, StdLib, Table, Value, Variadic};
@@ -33,6 +33,8 @@ struct FakeRedis {
     data: HashMap<String, (String, Option<u64>)>,
     /// Every `SET` the script issued: (key, value, PX in milliseconds).
     sets: Vec<(String, String, Option<u64>)>,
+    /// Keys holding a value that is not a string, such as a hash.
+    other_types: HashSet<String>,
 }
 
 impl FakeRedis {
@@ -50,6 +52,9 @@ impl FakeRedis {
             .map(|n| n.to_ascii_uppercase())
             .unwrap_or_default();
         match (name.as_str(), &args[1..]) {
+            ("GET", [key]) if self.other_types.contains(key) => {
+                Err("WRONGTYPE Operation against a key holding the wrong kind of value".to_owned())
+            }
             ("GET", [key]) => Ok(self.live(key).cloned().map_or(Answer::Nil, Answer::Bulk)),
             ("SET", [key, value, options @ ..]) => {
                 let expiry_ms = match options {
@@ -61,15 +66,21 @@ impl FakeRedis {
                     _ => return Err(format!("SET options {options:?} are not in the harness")),
                 };
                 let expiry = expiry_ms.map(|ms| self.now_us + ms * 1_000);
+                // SET replaces a value of any type.
+                self.other_types.remove(key);
                 self.data.insert(key.clone(), (value.clone(), expiry));
                 self.sets.push((key.clone(), value.clone(), expiry_ms));
                 Ok(Answer::Ok)
             }
             ("DEL", keys) | ("EXISTS", keys) if !keys.is_empty() => {
-                let live = keys.iter().filter(|key| self.live(key).is_some()).count();
+                let live = keys
+                    .iter()
+                    .filter(|key| self.live(key).is_some() || self.other_types.contains(*key))
+                    .count();
                 if name == "DEL" {
                     for key in keys {
                         self.data.remove(key);
+                        self.other_types.remove(key);
                     }
                 }
                 Ok(Answer::Int(live as i64))
@@ -742,4 +753,40 @@ fn gcra_script_recovers_one_interval_after_the_clock_moves_back() {
         .expect("script ran")
         .expect("a client that waits Retry-After is allowed");
     assert_eq!(info.remaining, 0);
+}
+
+#[test]
+fn harness_reports_wrongtype_like_redis() {
+    let fake = fresh();
+    let key = RedisStorage::new(()).redis_key(USER);
+    fake.borrow_mut().other_types.insert(key);
+
+    let raised = run_snippet("return {redis.call('GET', KEYS[1]), 0, 0, 0}", &fake);
+    let caught = run_snippet(
+        "local reply = redis.pcall('GET', KEYS[1])
+         return {type(reply) == 'table' and reply.err and 1 or 0, 0, 0, 0}",
+        &fake,
+    );
+
+    assert!(raised.unwrap_err().contains("WRONGTYPE"));
+    assert_eq!(caught, Ok((1, 0, 0, 0)));
+}
+
+#[test]
+fn gcra_script_heals_a_key_of_the_wrong_type() {
+    let fake = fresh();
+    let storage = RedisStorage::new(()).use_client_clock();
+    let key = storage.redis_key(USER);
+    fake.borrow_mut().other_types.insert(key.clone());
+
+    let info = script_check(&fake, &storage, &Quota::per_second(4), 1, ms(1_000))
+        .expect("a key of another type must not fail every request")
+        .expect("it counts as a fresh bucket");
+
+    assert_eq!(info.remaining, 3);
+    let state = fake.borrow();
+    assert!(!state.other_types.contains(&key));
+    let (value, expiry) = &state.data[&key];
+    assert_eq!(value, "1250000");
+    assert!(expiry.is_some(), "the healed value must expire");
 }

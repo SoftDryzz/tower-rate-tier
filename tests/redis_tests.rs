@@ -330,3 +330,35 @@ async fn a_corrupt_value_heals_itself() {
     assert_eq!(stored.as_deref(), Some("1250000"));
     assert!(ttl_ms > 0, "the healed key must expire, PTTL = {ttl_ms}");
 }
+
+#[tokio::test]
+async fn a_key_of_the_wrong_type_heals_itself() {
+    let Some(mut conn) = connect().await else {
+        return;
+    };
+    let redis = RedisStorage::new(conn.clone())
+        .key_prefix(unique_prefix("wrongtype"))
+        .use_client_clock();
+    let key = StorageKey::new("alice", "free");
+    let _: () = redis::cmd("HSET")
+        .arg(redis.redis_key(key))
+        .arg("field")
+        .arg("value")
+        .query_async(&mut conn)
+        .await
+        .unwrap();
+
+    let info = redis
+        .check_and_update(key, &Quota::per_second(4), 1, millis(1_000))
+        .await
+        .expect("a key of another type must not fail the request")
+        .expect("it counts as a fresh bucket");
+    assert_eq!(info.remaining, 3);
+
+    let kind: String = redis::cmd("TYPE")
+        .arg(redis.redis_key(key))
+        .query_async(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(kind, "string");
+}
