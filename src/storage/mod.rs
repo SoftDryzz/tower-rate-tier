@@ -15,9 +15,9 @@ pub type StorageFuture<'a> = Pin<
 
 /// Identifies one rate-limit bucket: a user within a tier.
 ///
-/// The parts stay separate so each backend chooses its own encoding, and a
-/// user id or tier name containing a separator can never collide with
-/// another pair.
+/// The parts stay separate so each backend can choose an encoding in which
+/// distinct pairs stay distinct, even when a user id or tier name contains
+/// the backend's separator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StorageKey<'a> {
     /// The user identifier returned by the identifier.
@@ -52,6 +52,12 @@ impl std::error::Error for StorageError {
 /// Trait for rate limit state persistence backends.
 ///
 /// Implementations must atomically check the current state and update it.
+///
+/// Each distinct [`StorageKey`] must map to its own state. A backend that
+/// joins the parts into one string must make that encoding injective, for
+/// example by length-prefixing or escaping the parts: a plain
+/// `format!("{user}:{tier}")` makes user `a:b` in tier `c` share state with
+/// user `a` in tier `b:c`.
 ///
 /// The outer `Result` represents storage-level errors (e.g., Redis down).
 /// The inner `Result` represents the GCRA decision (allowed vs rate limited).

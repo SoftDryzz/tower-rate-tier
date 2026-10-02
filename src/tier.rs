@@ -267,7 +267,11 @@ impl RateTierBuilder {
         self
     }
 
-    /// Set the default tier name (used when `OnMissing::UseDefault`).
+    /// Set the default tier name.
+    ///
+    /// Used by [`OnMissing::UseDefault`] for unidentified requests and by
+    /// [`OnUnknownTier::UseDefault`] for tiers that are not configured.
+    /// Without one, `OnUnknownTier::UseDefault` answers 403.
     pub fn default_tier(mut self, name: impl Into<String>) -> Self {
         self.default_tier = Some(name.into());
         self

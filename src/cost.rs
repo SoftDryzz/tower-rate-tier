@@ -7,7 +7,8 @@ use tower_service::Service;
 /// Extension type inserted into request extensions by [`tier_cost`].
 ///
 /// `TierLimitService` reads this to determine the cost of the current request.
-/// If absent, the default cost of 1 is used.
+/// If absent, the cost comes from
+/// [`TierLimitLayer::cost_fn`](crate::TierLimitLayer::cost_fn), or is 1.
 #[derive(Debug, Clone, Copy)]
 pub struct TierCost(pub u32);
 

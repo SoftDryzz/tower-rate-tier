@@ -516,3 +516,22 @@ async fn unknown_tier_policy_can_deny_or_allow() {
         assert!(!resp.headers().contains_key("x-ratelimit-limit"));
     }
 }
+
+#[tokio::test]
+async fn unknown_tier_inherits_an_unlimited_default_tier() {
+    let rate_tier = RateTier::builder()
+        .tier("free", Quota::per_second(1))
+        .tier("enterprise", Quota::unlimited())
+        .default_tier("enterprise")
+        .clock(FakeClock::new())
+        .build();
+    let mut svc = TierLimitLayer::new(rate_tier)
+        .identifier_fn(|_| Some(TierIdentity::new("u1", "zzz")))
+        .layer(OkService);
+
+    // UseDefault means the default tier's quota, which here is unlimited.
+    for _ in 0..5 {
+        let resp = svc.call(build_request(None)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+}

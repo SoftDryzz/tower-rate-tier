@@ -67,8 +67,8 @@ pub fn cost_exceeds_limit_response(tier: &str, cost: u32, limit: u32) -> Respons
         .unwrap()
 }
 
-/// Build a response for when the identifier cannot determine the user/tier
-/// and the policy is `OnMissing::Deny(status)`.
+/// Build a JSON error response with the given status, used by the
+/// `OnMissing::Deny` and `OnUnknownTier` policies.
 pub fn deny_response(status: StatusCode) -> Response<String> {
     Response::builder()
         .status(status)
