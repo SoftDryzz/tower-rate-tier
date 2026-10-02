@@ -57,3 +57,5 @@ pub use tier::{CheckError, RateTier};
 
 #[cfg(feature = "buffered-body")]
 pub use buffered::{BufferedTierLimitLayer, BufferedTierLimitService};
+#[cfg(feature = "redis")]
+pub use storage::redis::RedisStorage;

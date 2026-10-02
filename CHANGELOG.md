@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- `RedisStorage` (feature `redis`) for several instances sharing one rate limit (#29): an atomic GCRA Lua script run with `EVALSHA` and reloaded after `NOSCRIPT`, Redis's `TIME` as the shared clock, keys `trt:<tier>:<sha1(user_id)>` that expire exactly when the bucket is full again, a 100 ms timeout, and any `ConnectionLike` (`ConnectionManager` by default, cluster connections too)
 - `Debug` implementations for all public types (`MemoryStorage` shows only its entry count, never user keys)
 - `RateLimited::retry_after_secs()` rounds the wait up to whole seconds for a `Retry-After` header; the custom 429 examples use it
 - `TierLimitLayer::cost_fn()` computes each request's cost inside the middleware from its method, URI, headers and extensions (including axum's `MatchedPath`)
@@ -18,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **Breaking:** the `redis` feature uses redis 1.x (it pulled in 0.27 before without using it) and needs Rust 1.88. Without it, the MSRV stays 1.75
 - **Breaking:** `OnMissing`, `OnStorageError` and `CheckError` are `#[non_exhaustive]`, so new variants can be added without another breaking release. The new `LimitEvent` variants and `CheckError::CostExceedsLimit` are `#[non_exhaustive]` too, so their fields must be matched with `..`
 - **Breaking:** `RateLimitInfo` and `RateLimited` report `reset_after: Duration` (time until the quota fully replenishes) instead of an absolute `reset_at: Nanos`, so results no longer depend on the storage backend's clock. Both now derive `PartialEq` and `Eq`
 - **Breaking:** `Storage::check_and_update()` takes a `StorageKey { user_id, tier }` instead of a pre-joined `&str`, and the key, quota and returned future share one lifetime so async backends can borrow them

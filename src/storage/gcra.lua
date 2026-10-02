@@ -1,0 +1,51 @@
+-- GCRA (Generic Cell Rate Algorithm) check for RedisStorage.
+--
+-- Redis runs the whole script atomically: no other command touches the key
+-- while it executes, so concurrent requests from any instance are safe.
+-- The Rust reference implementation is `check_gcra` in src/gcra.rs, and
+-- tests/redis_tests.rs compares this script's results with it.
+--
+-- TODO: implement the check described below.
+--
+-- Input
+--   KEYS[1]  bucket key: one user within one tier.
+--   ARGV[1]  current time in microseconds since the Unix epoch, as an integer
+--            string. An empty string means "read it with redis.call('TIME')",
+--            which is the default so every instance shares Redis's clock.
+--   ARGV[2]  emission interval in microseconds (time per request), >= 1.
+--   ARGV[3]  burst offset in microseconds (emission interval * max burst).
+--   ARGV[4]  cost of this request in cells, >= 0. It is never above the max
+--            burst: the Rust side rejects that before calling the script.
+--
+-- Stored value
+--   The TAT (theoretical arrival time) in microseconds, as an integer string.
+--   A missing key, or a TAT in the past, means a fresh bucket.
+--
+-- Output: an array of four integers
+--   { allowed, remaining, retry_after_us, reset_after_us }
+--   allowed         1 if the request is allowed, 0 if it is rate limited.
+--   remaining       requests left after this one (0 when limited).
+--   retry_after_us  wait before this request would be allowed (0 when allowed).
+--   reset_after_us  time until the bucket is full again. When limited, measure
+--                   it from the stored TAT: the rejected request consumed
+--                   nothing.
+--
+-- Effects
+--   allowed  store the new TAT so it expires exactly when the bucket is full
+--            again (SET key value PX ms). PX must be >= 1, so store nothing
+--            when the new TAT is not in the future (a cost of 0 on a fresh
+--            bucket).
+--   limited  write nothing.
+--
+-- Pitfalls the tests check
+--   * Lua numbers are doubles, exact for integers up to 2^53. That covers
+--     microseconds until the year 2255; nanoseconds would lose precision.
+--   * A large number turned into a string with tostring(), or passed straight
+--     to redis.call(), may come out as "1.7900000001235e+15". Store and return
+--     integers, e.g. via string.format("%d", n).
+--   * Calling TIME before a write needs effects replication: always on in
+--     Redis 7; call redis.replicate_commands() first to support Redis 5 and 6.
+
+return redis.error_reply(
+  "tower-rate-tier: the GCRA script in src/storage/gcra.lua is not implemented yet"
+)

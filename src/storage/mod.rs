@@ -1,5 +1,10 @@
 /// In-memory storage backend using `DashMap`.
 pub mod memory;
+#[cfg(feature = "redis")]
+/// Redis storage backend for several instances sharing one rate limit.
+///
+/// Requires the `redis` feature.
+pub mod redis;
 
 use std::fmt;
 use std::future::Future;
