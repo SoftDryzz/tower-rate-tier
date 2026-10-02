@@ -32,7 +32,13 @@ type Reply = (i64, i64, i64, i64);
 ///
 /// A check that gets no answer within the [timeout](Self::timeout) (100 ms by
 /// default) fails with a [`StorageError`], which the
-/// [`OnStorageError`](crate::OnStorageError) policy then handles.
+/// [`OnStorageError`](crate::OnStorageError) policy then handles. The script
+/// may still run on Redis after the timeout and count the request, so with
+/// `OnStorageError::Deny` a timed-out request can be both denied and counted.
+///
+/// Redis works in microseconds: a quota faster than one request per
+/// microsecond is rounded to one per microsecond, which is stricter than the
+/// same quota in [`MemoryStorage`](crate::storage::memory::MemoryStorage).
 ///
 /// The script is defensive: every key it writes has an expiry, it touches
 /// only its own key, malformed input is refused without writing (and the

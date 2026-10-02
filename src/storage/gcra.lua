@@ -4,7 +4,7 @@
 -- while it executes, so concurrent requests from any instance are safe.
 -- The Rust reference implementation is `check_gcra` in src/gcra.rs. Two
 -- test suites compare this script's results with it:
---   cargo test --features redis --lib gcra_script   (embedded Lua 5.1, no
+--   cargo test --features redis --lib script_tests  (embedded Lua 5.1, no
 --                                                     Redis server needed)
 --   cargo test --features redis --test redis_tests  (a real Redis)
 --
@@ -62,8 +62,9 @@
 --     are converted exactly by Redis. Lua's own conversions are not:
 --     tostring(n) and "x" .. n use "%.14g", so a 16-digit TAT becomes
 --     "1.7900000011235e+15". This script never converts numbers itself.
---   * Calling TIME before a write needs effects replication: always on in
---     Redis 7; redis.replicate_commands() enables it on Redis 5 and 6.
+--   * Calling TIME before a write needs effects replication: the default
+--     since Redis 5 and the only mode since Redis 7. The guarded
+--     redis.replicate_commands() call enables it on Redis 3.2 to 4.
 
 -- Every integer below this is exact in a Lua 5.1 number (a double).
 local MAX_EXACT = 2 ^ 53

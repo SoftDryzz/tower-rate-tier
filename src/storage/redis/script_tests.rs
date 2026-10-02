@@ -4,7 +4,7 @@
 //! No server or background process is involved, so these tests run anywhere:
 //!
 //! ```text
-//! cargo test --features redis --lib gcra_script
+//! cargo test --features redis --lib script_tests
 //! ```
 //!
 //! The imitation follows Redis where scripts tend to trip: arguments passed to
