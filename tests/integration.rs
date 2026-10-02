@@ -316,3 +316,25 @@ async fn reset_header_is_a_unix_timestamp_near_now() {
         "reset={reset} now={before}"
     );
 }
+
+#[tokio::test]
+async fn layer_and_programmatic_checks_share_one_rate_tier() {
+    let rate_tier = std::sync::Arc::new(
+        RateTier::builder()
+            .tier("free", Quota::per_second(2))
+            .default_tier("free")
+            .clock(FakeClock::new())
+            .build(),
+    );
+    let mut svc = TierLimitLayer::new(rate_tier.clone())
+        .identifier_fn(|_| Some(TierIdentity::new("u1", "free")))
+        .layer(OkService);
+
+    // One request through the middleware plus one direct check use up 2/sec.
+    let resp = svc.call(build_request(None)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(rate_tier.check("u1", "free", 1).await.unwrap().is_ok());
+
+    let resp = svc.call(build_request(None)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+}

@@ -80,12 +80,17 @@ impl TierIdentifier for NoopIdentifier {
 impl TierLimitLayer {
     /// Create a new layer with the given rate tier configuration.
     ///
+    /// Accepts a [`RateTier`] or an `Arc<RateTier>`. Pass a shared `Arc` to
+    /// count middleware requests and programmatic
+    /// [`RateTier::check()`](crate::RateTier::check) calls against the same
+    /// limits and storage.
+    ///
     /// You must call [`identifier`](Self::identifier) or
     /// [`identifier_fn`](Self::identifier_fn) before using this layer,
     /// otherwise all requests will be treated as unidentified.
-    pub fn new(rate_tier: RateTier) -> Self {
+    pub fn new(rate_tier: impl Into<Arc<RateTier>>) -> Self {
         Self {
-            rate_tier: Arc::new(rate_tier),
+            rate_tier: rate_tier.into(),
             identifier: Arc::new(NoopIdentifier),
             on_storage_error: OnStorageError::default(),
             on_limited: None,
