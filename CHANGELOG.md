@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- `RedisStorage::key_secret()` hashes user ids with HMAC-SHA1 under a secret, so ids with little entropy (IP addresses, emails) cannot be recovered from Redis keys
 - `RedisStorage` (feature `redis`) for several instances sharing one rate limit (#29): an atomic GCRA Lua script run with `EVALSHA` and reloaded after `NOSCRIPT`, Redis's `TIME` as the shared clock, keys `trt:<tier>:<sha1(user_id)>` that expire exactly when the bucket is full again, a 100 ms timeout, and any `ConnectionLike` (`ConnectionManager` by default, cluster connections too). The script validates its input, never writes a key without an expiry or touches other keys, keeps user ids out of error messages, heals corrupted values and caps the wait if Redis's clock moves back
 - `Debug` implementations for all public types (`MemoryStorage` shows only its entry count, never user keys)
 - `RateLimited::retry_after_secs()` rounds the wait up to whole seconds for a `Retry-After` header; the custom 429 examples use it

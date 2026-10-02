@@ -24,9 +24,11 @@ type Reply = (i64, i64, i64, i64);
 /// restart, a `SCRIPT FLUSH` or a failover). By default the script reads the
 /// time with Redis's `TIME`, so instances never disagree about the clock.
 ///
-/// Keys look like `trt:<tier>:<sha1 of the user id>`, so user ids such as
-/// API keys never appear in Redis. Each key expires when its bucket is full
-/// again, so no garbage collection is needed.
+/// Keys look like `trt:<tier>:<sha1 of the user id>`, so user ids never
+/// appear in Redis in plain text. Ids with little entropy, such as IP
+/// addresses or emails, also need a [`key_secret`](Self::key_secret): without
+/// one they can be recovered by hashing every candidate. Each key expires when
+/// its bucket is full again, so no garbage collection is needed.
 ///
 /// A check that gets no answer within the [timeout](Self::timeout) (100 ms by
 /// default) fails with a [`StorageError`], which the
@@ -68,6 +70,7 @@ pub struct RedisStorage<C = ConnectionManager> {
     key_prefix: String,
     timeout: Duration,
     hash_user_ids: bool,
+    key_secret: Option<Vec<u8>>,
     client_clock: bool,
 }
 
@@ -80,6 +83,7 @@ impl<C> RedisStorage<C> {
             key_prefix: "trt:".to_owned(),
             timeout: DEFAULT_TIMEOUT,
             hash_user_ids: true,
+            key_secret: None,
             client_clock: false,
         }
     }
@@ -105,6 +109,19 @@ impl<C> RedisStorage<C> {
         self
     }
 
+    /// Hashes user ids with a secret key (HMAC-SHA1) instead of plain SHA-1.
+    ///
+    /// Plain SHA-1 hides high-entropy ids such as API keys, but ids with
+    /// little entropy (IP addresses, emails, numeric ids) can be recovered by
+    /// hashing every candidate. With a secret kept out of Redis they cannot.
+    /// Every instance must use the same secret, and changing it starts every
+    /// bucket afresh. It has no effect together with
+    /// [`plain_user_ids`](Self::plain_user_ids).
+    pub fn key_secret(mut self, secret: impl AsRef<[u8]>) -> Self {
+        self.key_secret = Some(secret.as_ref().to_vec());
+        self
+    }
+
     /// Uses the rate limiter's [`Clock`](crate::clock::Clock) instead of
     /// Redis's `TIME`.
     ///
@@ -122,7 +139,10 @@ impl<C> RedisStorage<C> {
     /// with a fixed-length digest, and the plain form length-prefixes the tier.
     pub fn redis_key(&self, key: StorageKey<'_>) -> String {
         if self.hash_user_ids {
-            let digest = sha1_smol::Sha1::from(key.user_id).digest().to_string();
+            let digest = match &self.key_secret {
+                Some(secret) => hmac_sha1(secret, key.user_id.as_bytes()),
+                None => sha1_smol::Sha1::from(key.user_id).digest(),
+            };
             format!("{}{}:{}", self.key_prefix, key.tier, digest)
         } else {
             format!(
@@ -171,6 +191,7 @@ impl<C> fmt::Debug for RedisStorage<C> {
             .field("key_prefix", &self.key_prefix)
             .field("timeout", &self.timeout)
             .field("hash_user_ids", &self.hash_user_ids)
+            .field("key_secret", &self.key_secret.is_some())
             .field("client_clock", &self.client_clock)
             .finish_non_exhaustive()
     }
@@ -208,6 +229,25 @@ where
             }
         })
     }
+}
+
+/// HMAC-SHA1 (RFC 2104) of `message` under `secret`.
+fn hmac_sha1(secret: &[u8], message: &[u8]) -> sha1_smol::Digest {
+    const BLOCK: usize = 64;
+    let mut key = [0u8; BLOCK];
+    if secret.len() > BLOCK {
+        key[..20].copy_from_slice(&sha1_smol::Sha1::from(secret).digest().bytes());
+    } else {
+        key[..secret.len()].copy_from_slice(secret);
+    }
+
+    let mut inner = sha1_smol::Sha1::new();
+    inner.update(&key.map(|b| b ^ 0x36));
+    inner.update(message);
+    let mut outer = sha1_smol::Sha1::new();
+    outer.update(&key.map(|b| b ^ 0x5c));
+    outer.update(&inner.digest().bytes());
+    outer.digest()
 }
 
 /// Microseconds, rounded up so a quota never becomes looser in Redis.
@@ -332,6 +372,61 @@ mod tests {
         let key = storage.redis_key(StorageKey::new("alice", "free"));
 
         assert_eq!(key, "app:4:free:alice");
+    }
+
+    #[test]
+    fn hmac_sha1_matches_rfc_2202() {
+        let cases: [(&[u8], &[u8], &str); 3] = [
+            (
+                &[0x0b; 20],
+                b"Hi There",
+                "b617318655057264e28bc0b6fb378c8ef146be00",
+            ),
+            (
+                b"Jefe",
+                b"what do ya want for nothing?",
+                "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79",
+            ),
+            (
+                &[0xaa; 80],
+                b"Test Using Larger Than Block-Size Key - Hash Key First",
+                "aa4ae5e15272d00e95705637ce8a3b55ed402112",
+            ),
+        ];
+        for (secret, message, expected) in cases {
+            assert_eq!(hmac_sha1(secret, message).to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn a_key_secret_changes_every_key() {
+        let key = StorageKey::new("203.0.113.7", "free");
+        let plain_hash = RedisStorage::new(NeverAnswers).redis_key(key);
+        let first = RedisStorage::new(NeverAnswers)
+            .key_secret("one")
+            .redis_key(key);
+        let again = RedisStorage::new(NeverAnswers)
+            .key_secret("one")
+            .redis_key(key);
+        let second = RedisStorage::new(NeverAnswers)
+            .key_secret("two")
+            .redis_key(key);
+
+        assert_eq!(first, again, "the same secret must give the same key");
+        assert_ne!(first, plain_hash);
+        assert_ne!(first, second);
+        assert!(first.starts_with("trt:free:") && first.len() == "trt:free:".len() + 40);
+        assert!(!first.contains("203.0.113.7"));
+    }
+
+    #[test]
+    fn debug_never_shows_the_key_secret() {
+        let storage = RedisStorage::new(NeverAnswers).key_secret("hunter2-secret");
+
+        let out = format!("{storage:?}");
+
+        assert!(!out.contains("hunter2"), "{out}");
+        assert!(out.contains("key_secret: true"), "{out}");
     }
 
     #[test]
