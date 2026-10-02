@@ -9,6 +9,16 @@ use crate::on_storage_error::OnStorageError;
 use crate::service::TierLimitService;
 use crate::tier::RateTier;
 
+/// Callback invoked when a request is rate limited.
+///
+/// Receives `(user_id, tier_name, rate_limited_info)`.
+pub type OnLimitedFn = dyn Fn(&str, &str, &RateLimited) + Send + Sync;
+
+/// Custom response builder for rate-limited requests.
+///
+/// Receives `(user_id, tier_name, rate_limited_info)` and returns a `Response<String>`.
+pub type RateLimitedResponseFn = dyn Fn(&str, &str, &RateLimited) -> Response<String> + Send + Sync;
+
 /// Tower layer for tier-based rate limiting.
 ///
 /// Wraps an inner service with [`TierLimitService`] to enforce per-tier rate limits.
@@ -30,20 +40,6 @@ use crate::tier::RateTier;
 ///         Some(TierIdentity::new(key, "free"))
 ///     });
 /// ```
-/// Callback invoked when a request is rate limited.
-///
-/// Receives `(user_id, tier_name, rate_limited_info)`.
-pub type OnLimitedFn = dyn Fn(&str, &str, &RateLimited) + Send + Sync;
-
-/// Custom response builder for rate-limited requests.
-///
-/// Receives `(user_id, tier_name, rate_limited_info)` and returns a `Response<String>`.
-pub type RateLimitedResponseFn = dyn Fn(&str, &str, &RateLimited) -> Response<String> + Send + Sync;
-
-/// Tower layer for tier-based rate limiting.
-///
-/// Wraps an inner service with [`TierLimitService`]
-/// to enforce per-tier rate limits.
 #[derive(Clone)]
 pub struct TierLimitLayer {
     pub(crate) rate_tier: Arc<RateTier>,

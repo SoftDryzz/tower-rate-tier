@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Fixed
 
 - docs.rs now builds with all features, so `buffered-body` items are documented
+- `TierLimitLayer` docs and example were attached to the `OnLimitedFn` alias
 
 ### Removed
 
