@@ -210,8 +210,7 @@ where
             let now = rate_tier.clock().now();
             let storage_key = format!("{}:{}", user_id, tier_name);
             let result = rate_tier
-                .storage()
-                .check_and_update(&storage_key, quota, cost, now)
+                .check_storage(&storage_key, quota, cost, now)
                 .await;
 
             let unix_offset = rate_tier.clock().unix_offset_nanos();

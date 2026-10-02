@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use crate::clock::{Clock, SystemClock};
 use crate::gc::GcHandle;
 use crate::gcra::{RateLimitInfo, RateLimited};
 use crate::on_missing::OnMissing;
-use crate::quota::Quota;
+use crate::quota::{Nanos, Quota};
 use crate::storage::memory::MemoryStorage;
-use crate::storage::{Storage, StorageError};
+use crate::storage::{Storage, StorageError, StorageFuture};
 
 /// Error returned by [`RateTier::check()`].
 ///
@@ -72,7 +72,17 @@ pub struct RateTier {
     on_missing: OnMissing,
     storage: Arc<dyn Storage>,
     clock: Arc<dyn Clock>,
-    _gc: Option<GcHandle>,
+    gc: Option<LazyGc>,
+}
+
+/// Garbage collector for the built-in `MemoryStorage`.
+///
+/// The task is spawned by the first check rather than by `build()`, so a
+/// `RateTier` can be built outside a Tokio runtime.
+struct LazyGc {
+    storage: Arc<MemoryStorage>,
+    interval: Duration,
+    handle: OnceLock<GcHandle>,
 }
 
 impl fmt::Debug for RateTier {
@@ -81,7 +91,7 @@ impl fmt::Debug for RateTier {
             .field("tiers", &self.tiers)
             .field("default_tier", &self.default_tier)
             .field("on_missing", &self.on_missing)
-            .field("gc_enabled", &self._gc.is_some())
+            .field("gc_enabled", &self.gc.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -148,10 +158,25 @@ impl RateTier {
 
         let now = self.clock.now();
         let storage_key = format!("{}:{}", user_id, tier_name);
-        Ok(self
-            .storage
-            .check_and_update(&storage_key, quota, cost, now)
-            .await?)
+        Ok(self.check_storage(&storage_key, quota, cost, now).await?)
+    }
+
+    /// Run a storage check, spawning the GC task first if it has not started.
+    ///
+    /// Must be called from inside a Tokio runtime, like any Tower service.
+    pub(crate) fn check_storage(
+        &self,
+        key: &str,
+        quota: &Quota,
+        cost: u32,
+        now: Nanos,
+    ) -> StorageFuture<'_> {
+        if let Some(gc) = &self.gc {
+            gc.handle.get_or_init(|| {
+                GcHandle::spawn(gc.storage.clone(), self.clock.clone(), gc.interval)
+            });
+        }
+        self.storage.check_and_update(key, quota, cost, now)
     }
 }
 
@@ -252,6 +277,9 @@ impl RateTierBuilder {
 
     /// Build the `RateTier` configuration.
     ///
+    /// Building does not need a Tokio runtime: the garbage collector for the
+    /// built-in storage is spawned by the first check, which runs inside one.
+    ///
     /// # Panics
     ///
     /// - If no tiers are defined.
@@ -270,20 +298,16 @@ impl RateTierBuilder {
         let clock: Arc<dyn Clock> = self.clock.unwrap_or_else(|| Arc::new(SystemClock::new()));
 
         // Use provided storage or default to MemoryStorage.
-        // GC only spawns for the default MemoryStorage and when gc_enabled is true.
-        let (storage, gc): (Arc<dyn Storage>, Option<GcHandle>) = match self.storage {
+        // GC only runs for the default MemoryStorage and when gc_enabled is true.
+        let (storage, gc): (Arc<dyn Storage>, Option<LazyGc>) = match self.storage {
             Some(custom) => (custom, None),
             None => {
                 let memory = Arc::new(MemoryStorage::new());
-                let gc = if self.gc_enabled {
-                    Some(GcHandle::spawn(
-                        memory.clone(),
-                        clock.clone(),
-                        self.gc_interval,
-                    ))
-                } else {
-                    None
-                };
+                let gc = self.gc_enabled.then(|| LazyGc {
+                    storage: memory.clone(),
+                    interval: self.gc_interval,
+                    handle: OnceLock::new(),
+                });
                 (memory, gc)
             }
         };
@@ -294,7 +318,37 @@ impl RateTierBuilder {
             on_missing: self.on_missing,
             storage,
             clock,
-            _gc: gc,
+            gc,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clock::FakeClock;
+
+    #[tokio::test(start_paused = true)]
+    async fn gc_starts_on_first_check_and_cleans_expired_entries() {
+        let clock = FakeClock::new();
+        let limiter = RateTier::builder()
+            .tier("free", Quota::per_second(1))
+            .clock(clock.clone())
+            .gc_interval(Duration::from_secs(1))
+            .build();
+        let gc = limiter.gc.as_ref().expect("built-in storage enables GC");
+        assert!(
+            gc.handle.get().is_none(),
+            "GC must not start before a check"
+        );
+
+        limiter.check("u1", "free", 1).await.unwrap().unwrap();
+        assert!(gc.handle.get().is_some(), "first check starts the GC");
+        assert_eq!(gc.storage.len(), 1);
+
+        clock.advance(Duration::from_secs(10));
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(gc.storage.len(), 0, "expired entry must be collected");
     }
 }

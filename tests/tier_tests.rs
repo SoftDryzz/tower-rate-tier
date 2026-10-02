@@ -152,6 +152,22 @@ async fn check_unknown_tier_returns_error() {
     }
 }
 
+#[test]
+fn build_works_outside_a_tokio_runtime() {
+    let limiter = RateTier::builder()
+        .tier("free", Quota::per_hour(100))
+        .build();
+
+    // The GC task starts with the first check, which runs inside a runtime.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        assert!(limiter.check("u1", "free", 1).await.unwrap().is_ok());
+    });
+}
+
 #[tokio::test]
 async fn build_with_custom_gc_interval() {
     let _limiter = RateTier::builder()
