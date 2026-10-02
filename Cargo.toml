@@ -40,6 +40,10 @@ criterion = { version = "0.5", features = ["html_reports"] }
 name = "middleware"
 harness = false
 
+[[example]]
+name = "axum_api_key"
+required-features = ["redis"]
+
 [features]
 default = []
 redis = ["dep:redis", "dep:sha1_smol"]
