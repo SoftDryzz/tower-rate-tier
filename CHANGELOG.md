@@ -6,15 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- `Debug` implementations for all public types (`MemoryStorage` shows only its entry count, never user keys)
+
+### Removed
+
+- Unused `tower` and `pin-project-lite` dependencies
+
 ### Fixed
 
 - docs.rs now builds with all features, so `buffered-body` items are documented
 - `TierLimitLayer` docs and example were attached to the `OnLimitedFn` alias
 - `identify_with_body` docs referenced a nonexistent `buffer_body(true)` signature
-
-### Removed
-
-- Unused `tower` and `pin-project-lite` dependencies
 
 ## [0.2.0] - 2026-03-17
 

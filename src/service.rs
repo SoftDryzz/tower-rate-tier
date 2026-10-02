@@ -1,3 +1,4 @@
+use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -26,6 +27,21 @@ pub struct TierLimitService<S> {
     pub(crate) on_storage_error: OnStorageError,
     pub(crate) on_limited: Option<Arc<OnLimitedFn>>,
     pub(crate) rate_limited_response: Option<Arc<RateLimitedResponseFn>>,
+}
+
+impl<S: fmt::Debug> fmt::Debug for TierLimitService<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TierLimitService")
+            .field("inner", &self.inner)
+            .field("rate_tier", &self.rate_tier)
+            .field("on_storage_error", &self.on_storage_error)
+            .field("on_limited", &self.on_limited.is_some())
+            .field(
+                "rate_limited_response",
+                &self.rate_limited_response.is_some(),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl<S: Clone> Clone for TierLimitService<S> {

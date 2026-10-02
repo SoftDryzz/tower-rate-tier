@@ -29,6 +29,7 @@ pub trait Clock: Send + Sync + 'static {
 /// nanoseconds from that point. The Unix offset is captured at construction
 /// so that internal timestamps can be converted to Unix timestamps for
 /// HTTP headers.
+#[derive(Debug)]
 pub struct SystemClock {
     epoch: tokio::time::Instant,
     unix_offset: u64,
@@ -84,7 +85,7 @@ impl Clock for SystemClock {
 /// clock.advance(Duration::from_secs(60));
 /// assert_eq!(clock.now(), 60_000_000_000);
 /// ```
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FakeClock {
     nanos: Arc<AtomicU64>,
 }

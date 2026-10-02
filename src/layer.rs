@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::Arc;
 
 use http::{HeaderMap, Response};
@@ -47,6 +48,20 @@ pub struct TierLimitLayer {
     pub(crate) on_storage_error: OnStorageError,
     pub(crate) on_limited: Option<Arc<OnLimitedFn>>,
     pub(crate) rate_limited_response: Option<Arc<RateLimitedResponseFn>>,
+}
+
+impl fmt::Debug for TierLimitLayer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TierLimitLayer")
+            .field("rate_tier", &self.rate_tier)
+            .field("on_storage_error", &self.on_storage_error)
+            .field("on_limited", &self.on_limited.is_some())
+            .field(
+                "rate_limited_response",
+                &self.rate_limited_response.is_some(),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 /// Default identifier that returns `None` for all requests.

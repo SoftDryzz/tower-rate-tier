@@ -3,6 +3,8 @@
 //! Assign users to named tiers (e.g. "free", "pro") with distinct quotas,
 //! and let the middleware enforce limits automatically via the GCRA algorithm.
 
+#![warn(missing_debug_implementations)]
+
 pub(crate) mod check;
 /// Clock abstractions for real and deterministic (test) time sources.
 pub mod clock;

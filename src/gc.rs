@@ -9,6 +9,7 @@ use crate::storage::memory::MemoryStorage;
 /// Handle to the background garbage collection task.
 ///
 /// The GC task is aborted when this handle is dropped.
+#[derive(Debug)]
 pub struct GcHandle {
     handle: JoinHandle<()>,
 }

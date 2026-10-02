@@ -75,6 +75,17 @@ pub struct RateTier {
     _gc: Option<GcHandle>,
 }
 
+impl fmt::Debug for RateTier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RateTier")
+            .field("tiers", &self.tiers)
+            .field("default_tier", &self.default_tier)
+            .field("on_missing", &self.on_missing)
+            .field("gc_enabled", &self._gc.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 impl RateTier {
     /// Returns a new [`RateTierBuilder`] for configuring tiers and quotas.
     pub fn builder() -> RateTierBuilder {
@@ -166,6 +177,20 @@ impl Default for RateTierBuilder {
             gc_interval: Duration::from_secs(60),
             gc_enabled: true,
         }
+    }
+}
+
+impl fmt::Debug for RateTierBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RateTierBuilder")
+            .field("tiers", &self.tiers)
+            .field("default_tier", &self.default_tier)
+            .field("on_missing", &self.on_missing)
+            .field("custom_clock", &self.clock.is_some())
+            .field("custom_storage", &self.storage.is_some())
+            .field("gc_interval", &self.gc_interval)
+            .field("gc_enabled", &self.gc_enabled)
+            .finish()
     }
 }
 

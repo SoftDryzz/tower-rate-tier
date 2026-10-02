@@ -1,3 +1,4 @@
+use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -43,6 +44,21 @@ pub struct BufferedTierLimitLayer {
     pub(crate) max_body_size: usize,
 }
 
+impl fmt::Debug for BufferedTierLimitLayer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BufferedTierLimitLayer")
+            .field("rate_tier", &self.rate_tier)
+            .field("on_storage_error", &self.on_storage_error)
+            .field("on_limited", &self.on_limited.is_some())
+            .field(
+                "rate_limited_response",
+                &self.rate_limited_response.is_some(),
+            )
+            .field("max_body_size", &self.max_body_size)
+            .finish_non_exhaustive()
+    }
+}
+
 impl BufferedTierLimitLayer {
     /// Set the maximum allowed body size in bytes.
     ///
@@ -83,6 +99,22 @@ pub struct BufferedTierLimitService<S> {
     on_limited: Option<Arc<OnLimitedFn>>,
     rate_limited_response: Option<Arc<RateLimitedResponseFn>>,
     max_body_size: usize,
+}
+
+impl<S: fmt::Debug> fmt::Debug for BufferedTierLimitService<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BufferedTierLimitService")
+            .field("inner", &self.inner)
+            .field("rate_tier", &self.rate_tier)
+            .field("on_storage_error", &self.on_storage_error)
+            .field("on_limited", &self.on_limited.is_some())
+            .field(
+                "rate_limited_response",
+                &self.rate_limited_response.is_some(),
+            )
+            .field("max_body_size", &self.max_body_size)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<S: Clone> Clone for BufferedTierLimitService<S> {

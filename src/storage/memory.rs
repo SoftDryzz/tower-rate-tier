@@ -1,3 +1,5 @@
+use std::fmt;
+
 use dashmap::DashMap;
 
 use crate::gcra::check_gcra;
@@ -44,6 +46,15 @@ impl Default for MemoryStorage {
     }
 }
 
+impl fmt::Debug for MemoryStorage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Keys are user identifiers (often API keys), so only the count is shown.
+        f.debug_struct("MemoryStorage")
+            .field("entries", &self.state.len())
+            .finish()
+    }
+}
+
 impl Storage for MemoryStorage {
     fn check_and_update(
         &self,
@@ -69,5 +80,21 @@ impl Storage for MemoryStorage {
         };
 
         Box::pin(std::future::ready(result))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_shows_entry_count_but_not_keys() {
+        let storage = MemoryStorage::new();
+        storage.state.insert("secret-api-key:free".to_owned(), 1);
+
+        let out = format!("{:?}", storage);
+
+        assert!(out.contains("entries: 1"), "{out}");
+        assert!(!out.contains("secret-api-key"), "{out}");
     }
 }
