@@ -293,3 +293,40 @@ async fn middleware_answers_429_from_redis_state() {
     let resp = svc.call(Request::new(String::new())).await.unwrap();
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
 }
+
+#[tokio::test]
+async fn a_corrupt_value_heals_itself() {
+    let Some(mut conn) = connect().await else {
+        return;
+    };
+    let redis = RedisStorage::new(conn.clone())
+        .key_prefix(unique_prefix("corrupt"))
+        .use_client_clock();
+    let key = StorageKey::new("alice", "free");
+    let _: () = redis::cmd("SET")
+        .arg(redis.redis_key(key))
+        .arg("not a number")
+        .query_async(&mut conn)
+        .await
+        .unwrap();
+
+    let info = redis
+        .check_and_update(key, &Quota::per_second(4), 1, millis(1_000))
+        .await
+        .expect("a corrupt value must not fail the request")
+        .expect("it counts as a fresh bucket");
+    assert_eq!(info.remaining, 3);
+
+    let stored: Option<String> = redis::cmd("GET")
+        .arg(redis.redis_key(key))
+        .query_async(&mut conn)
+        .await
+        .unwrap();
+    let ttl_ms: i64 = redis::cmd("PTTL")
+        .arg(redis.redis_key(key))
+        .query_async(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(stored.as_deref(), Some("1250000"));
+    assert!(ttl_ms > 0, "the healed key must expire, PTTL = {ttl_ms}");
+}
