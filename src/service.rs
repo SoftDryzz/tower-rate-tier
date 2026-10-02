@@ -1,4 +1,3 @@
-use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -10,9 +9,7 @@ use tower_service::Service;
 
 use crate::check::{self, CheckOutcome};
 use crate::cost::TierCost;
-use crate::identifier::TierIdentifier;
-use crate::layer::{OnLimitedFn, RateLimitedResponseFn};
-use crate::on_storage_error::OnStorageError;
+use crate::layer::Settings;
 use crate::response;
 use crate::storage::StorageKey;
 use crate::tier::RateTier;
@@ -22,41 +19,11 @@ use crate::tier::RateTier;
 /// Created by [`TierLimitLayer`](crate::layer::TierLimitLayer).
 /// This service intercepts requests, identifies the user/tier,
 /// checks the rate limit, and either forwards the request or returns 429.
+#[derive(Clone, Debug)]
 pub struct TierLimitService<S> {
     pub(crate) inner: S,
     pub(crate) rate_tier: Arc<RateTier>,
-    pub(crate) identifier: Arc<dyn TierIdentifier>,
-    pub(crate) on_storage_error: OnStorageError,
-    pub(crate) on_limited: Option<Arc<OnLimitedFn>>,
-    pub(crate) rate_limited_response: Option<Arc<RateLimitedResponseFn>>,
-}
-
-impl<S: fmt::Debug> fmt::Debug for TierLimitService<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TierLimitService")
-            .field("inner", &self.inner)
-            .field("rate_tier", &self.rate_tier)
-            .field("on_storage_error", &self.on_storage_error)
-            .field("on_limited", &self.on_limited.is_some())
-            .field(
-                "rate_limited_response",
-                &self.rate_limited_response.is_some(),
-            )
-            .finish_non_exhaustive()
-    }
-}
-
-impl<S: Clone> Clone for TierLimitService<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            rate_tier: self.rate_tier.clone(),
-            identifier: self.identifier.clone(),
-            on_storage_error: self.on_storage_error,
-            on_limited: self.on_limited.clone(),
-            rate_limited_response: self.rate_limited_response.clone(),
-        }
-    }
+    pub(crate) settings: Arc<Settings>,
 }
 
 impl<S, B, ResBody> Service<Request<B>> for TierLimitService<S>
@@ -77,16 +44,13 @@ where
 
     fn call(&mut self, req: Request<B>) -> Self::Future {
         let rate_tier = self.rate_tier.clone();
-        let identifier = self.identifier.clone();
-        let on_storage_error = self.on_storage_error;
-        let on_limited = self.on_limited.clone();
-        let rate_limited_response_fn = self.rate_limited_response.clone();
+        let settings = self.settings.clone();
         let mut inner = self.inner.clone();
         // Swap to preserve readiness: the clone gets future calls, self keeps the ready one.
         std::mem::swap(&mut self.inner, &mut inner);
 
         Box::pin(async move {
-            let identity = identifier.identify(req.headers()).await;
+            let identity = settings.identifier.identify(req.headers()).await;
 
             let (user_id, tier_name) = match check::resolve_identity(identity, &rate_tier) {
                 Ok(pair) => pair,
@@ -113,15 +77,7 @@ where
             // relative to it.
             let checked_at = SystemTime::now();
 
-            match check::process_result(
-                result,
-                &user_id,
-                &tier_name,
-                on_storage_error,
-                &on_limited,
-                &rate_limited_response_fn,
-                checked_at,
-            ) {
+            match check::process_result(result, &user_id, &tier_name, &settings, checked_at) {
                 CheckOutcome::Allow(info) => {
                     let mut resp = inner.call(req).await?;
                     response::inject_headers(&mut resp, &info, checked_at);

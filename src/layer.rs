@@ -41,19 +41,24 @@ pub type RateLimitedResponseFn = dyn Fn(&str, &str, &RateLimited) -> Response<St
 ///         Some(TierIdentity::new(key, "free"))
 ///     });
 /// ```
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TierLimitLayer {
     pub(crate) rate_tier: Arc<RateTier>,
+    pub(crate) settings: Settings,
+}
+
+/// Middleware settings shared by a layer and the services it creates.
+#[derive(Clone)]
+pub(crate) struct Settings {
     pub(crate) identifier: Arc<dyn TierIdentifier>,
     pub(crate) on_storage_error: OnStorageError,
     pub(crate) on_limited: Option<Arc<OnLimitedFn>>,
     pub(crate) rate_limited_response: Option<Arc<RateLimitedResponseFn>>,
 }
 
-impl fmt::Debug for TierLimitLayer {
+impl fmt::Debug for Settings {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TierLimitLayer")
-            .field("rate_tier", &self.rate_tier)
+        f.debug_struct("Settings")
             .field("on_storage_error", &self.on_storage_error)
             .field("on_limited", &self.on_limited.is_some())
             .field(
@@ -91,10 +96,12 @@ impl TierLimitLayer {
     pub fn new(rate_tier: impl Into<Arc<RateTier>>) -> Self {
         Self {
             rate_tier: rate_tier.into(),
-            identifier: Arc::new(NoopIdentifier),
-            on_storage_error: OnStorageError::default(),
-            on_limited: None,
-            rate_limited_response: None,
+            settings: Settings {
+                identifier: Arc::new(NoopIdentifier),
+                on_storage_error: OnStorageError::default(),
+                on_limited: None,
+                rate_limited_response: None,
+            },
         }
     }
 
@@ -102,7 +109,7 @@ impl TierLimitLayer {
     ///
     /// Use this for async identification logic (e.g., database or Redis lookups).
     pub fn identifier(mut self, identifier: impl TierIdentifier) -> Self {
-        self.identifier = Arc::new(identifier);
+        self.settings.identifier = Arc::new(identifier);
         self
     }
 
@@ -113,7 +120,7 @@ impl TierLimitLayer {
     where
         F: Fn(&HeaderMap) -> Option<TierIdentity> + Send + Sync + 'static,
     {
-        self.identifier = Arc::new(ClosureIdentifier(f));
+        self.settings.identifier = Arc::new(ClosureIdentifier(f));
         self
     }
 
@@ -121,7 +128,7 @@ impl TierLimitLayer {
     ///
     /// Default: [`OnStorageError::Allow`] (fail open).
     pub fn on_storage_error(mut self, policy: OnStorageError) -> Self {
-        self.on_storage_error = policy;
+        self.settings.on_storage_error = policy;
         self
     }
 
@@ -144,7 +151,7 @@ impl TierLimitLayer {
         mut self,
         f: impl Fn(&str, &str, &RateLimited) + Send + Sync + 'static,
     ) -> Self {
-        self.on_limited = Some(Arc::new(f));
+        self.settings.on_limited = Some(Arc::new(f));
         self
     }
 
@@ -174,7 +181,7 @@ impl TierLimitLayer {
         mut self,
         f: impl Fn(&str, &str, &RateLimited) -> Response<String> + Send + Sync + 'static,
     ) -> Self {
-        self.rate_limited_response = Some(Arc::new(f));
+        self.settings.rate_limited_response = Some(Arc::new(f));
         self
     }
 
@@ -193,10 +200,7 @@ impl TierLimitLayer {
     pub fn buffer_body(self) -> crate::buffered::BufferedTierLimitLayer {
         crate::buffered::BufferedTierLimitLayer {
             rate_tier: self.rate_tier,
-            identifier: self.identifier,
-            on_storage_error: self.on_storage_error,
-            on_limited: self.on_limited,
-            rate_limited_response: self.rate_limited_response,
+            settings: self.settings,
             max_body_size: 64 * 1024,
         }
     }
@@ -209,10 +213,7 @@ impl<S> Layer<S> for TierLimitLayer {
         TierLimitService {
             inner,
             rate_tier: self.rate_tier.clone(),
-            identifier: self.identifier.clone(),
-            on_storage_error: self.on_storage_error,
-            on_limited: self.on_limited.clone(),
-            rate_limited_response: self.rate_limited_response.clone(),
+            settings: Arc::new(self.settings.clone()),
         }
     }
 }

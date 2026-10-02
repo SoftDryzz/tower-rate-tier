@@ -3,14 +3,13 @@
 
 #![allow(clippy::result_large_err)]
 
-use std::sync::Arc;
 use std::time::SystemTime;
 
 use http::Response;
 
 use crate::gcra::RateLimitInfo;
 use crate::identifier::TierIdentity;
-use crate::layer::{OnLimitedFn, RateLimitedResponseFn};
+use crate::layer::Settings;
 use crate::on_missing::OnMissing;
 use crate::on_storage_error::OnStorageError;
 use crate::quota::Quota;
@@ -67,25 +66,23 @@ pub(crate) fn process_result(
     result: Result<Result<RateLimitInfo, crate::gcra::RateLimited>, crate::storage::StorageError>,
     user_id: &str,
     tier_name: &str,
-    on_storage_error: OnStorageError,
-    on_limited: &Option<Arc<OnLimitedFn>>,
-    rate_limited_response_fn: &Option<Arc<RateLimitedResponseFn>>,
+    settings: &Settings,
     now: SystemTime,
 ) -> CheckOutcome {
     match result {
         Ok(Ok(info)) => CheckOutcome::Allow(info),
         Ok(Err(limited)) => {
-            if let Some(ref cb) = on_limited {
+            if let Some(cb) = &settings.on_limited {
                 cb(user_id, tier_name, &limited);
             }
-            let resp = if let Some(ref builder) = rate_limited_response_fn {
+            let resp = if let Some(builder) = &settings.rate_limited_response {
                 builder(user_id, tier_name, &limited)
             } else {
                 response::rate_limited_response(&limited, tier_name, now)
             };
             CheckOutcome::Deny(resp)
         }
-        Err(_storage_err) => match on_storage_error {
+        Err(_storage_err) => match settings.on_storage_error {
             OnStorageError::Allow => CheckOutcome::PassThrough,
             OnStorageError::Deny => CheckOutcome::Deny(response::storage_error_response()),
         },

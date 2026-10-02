@@ -1,4 +1,3 @@
-use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -14,9 +13,7 @@ use tower_service::Service;
 
 use crate::check::{self, CheckOutcome};
 use crate::cost::TierCost;
-use crate::identifier::TierIdentifier;
-use crate::layer::{OnLimitedFn, RateLimitedResponseFn};
-use crate::on_storage_error::OnStorageError;
+use crate::layer::Settings;
 use crate::response;
 use crate::storage::StorageKey;
 use crate::tier::RateTier;
@@ -27,7 +24,8 @@ use crate::tier::RateTier;
 /// on a [`TierLimitLayer`](crate::TierLimitLayer).
 ///
 /// This layer buffers the request body before identification, enabling
-/// [`TierIdentifier::identify_with_body`] to inspect the body contents.
+/// [`TierIdentifier::identify_with_body`](crate::TierIdentifier::identify_with_body)
+/// to inspect the body contents.
 /// The body is then reconstructed as `Full<Bytes>` for the downstream service.
 ///
 /// # Body size limit
@@ -38,29 +36,11 @@ use crate::tier::RateTier;
 /// otherwise reading stops at the first chunk that crosses the limit.
 ///
 /// Requires the `buffered-body` feature.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BufferedTierLimitLayer {
     pub(crate) rate_tier: Arc<RateTier>,
-    pub(crate) identifier: Arc<dyn TierIdentifier>,
-    pub(crate) on_storage_error: OnStorageError,
-    pub(crate) on_limited: Option<Arc<OnLimitedFn>>,
-    pub(crate) rate_limited_response: Option<Arc<RateLimitedResponseFn>>,
+    pub(crate) settings: Settings,
     pub(crate) max_body_size: usize,
-}
-
-impl fmt::Debug for BufferedTierLimitLayer {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BufferedTierLimitLayer")
-            .field("rate_tier", &self.rate_tier)
-            .field("on_storage_error", &self.on_storage_error)
-            .field("on_limited", &self.on_limited.is_some())
-            .field(
-                "rate_limited_response",
-                &self.rate_limited_response.is_some(),
-            )
-            .field("max_body_size", &self.max_body_size)
-            .finish_non_exhaustive()
-    }
 }
 
 impl BufferedTierLimitLayer {
@@ -81,10 +61,7 @@ impl<S> Layer<S> for BufferedTierLimitLayer {
         BufferedTierLimitService {
             inner,
             rate_tier: self.rate_tier.clone(),
-            identifier: self.identifier.clone(),
-            on_storage_error: self.on_storage_error,
-            on_limited: self.on_limited.clone(),
-            rate_limited_response: self.rate_limited_response.clone(),
+            settings: Arc::new(self.settings.clone()),
             max_body_size: self.max_body_size,
         }
     }
@@ -95,44 +72,12 @@ impl<S> Layer<S> for BufferedTierLimitLayer {
 /// Created by [`BufferedTierLimitLayer`].
 ///
 /// Requires the `buffered-body` feature.
+#[derive(Clone, Debug)]
 pub struct BufferedTierLimitService<S> {
     inner: S,
     rate_tier: Arc<RateTier>,
-    identifier: Arc<dyn TierIdentifier>,
-    on_storage_error: OnStorageError,
-    on_limited: Option<Arc<OnLimitedFn>>,
-    rate_limited_response: Option<Arc<RateLimitedResponseFn>>,
+    settings: Arc<Settings>,
     max_body_size: usize,
-}
-
-impl<S: fmt::Debug> fmt::Debug for BufferedTierLimitService<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BufferedTierLimitService")
-            .field("inner", &self.inner)
-            .field("rate_tier", &self.rate_tier)
-            .field("on_storage_error", &self.on_storage_error)
-            .field("on_limited", &self.on_limited.is_some())
-            .field(
-                "rate_limited_response",
-                &self.rate_limited_response.is_some(),
-            )
-            .field("max_body_size", &self.max_body_size)
-            .finish_non_exhaustive()
-    }
-}
-
-impl<S: Clone> Clone for BufferedTierLimitService<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            rate_tier: self.rate_tier.clone(),
-            identifier: self.identifier.clone(),
-            on_storage_error: self.on_storage_error,
-            on_limited: self.on_limited.clone(),
-            rate_limited_response: self.rate_limited_response.clone(),
-            max_body_size: self.max_body_size,
-        }
-    }
 }
 
 impl<S, B, ResBody> Service<Request<B>> for BufferedTierLimitService<S>
@@ -155,10 +100,7 @@ where
 
     fn call(&mut self, req: Request<B>) -> Self::Future {
         let rate_tier = self.rate_tier.clone();
-        let identifier = self.identifier.clone();
-        let on_storage_error = self.on_storage_error;
-        let on_limited = self.on_limited.clone();
-        let rate_limited_response_fn = self.rate_limited_response.clone();
+        let settings = self.settings.clone();
         let max_body_size = self.max_body_size;
         let mut inner = self.inner.clone();
         std::mem::swap(&mut self.inner, &mut inner);
@@ -185,7 +127,8 @@ where
             };
 
             // Identify using headers + body
-            let identity = identifier
+            let identity = settings
+                .identifier
                 .identify_with_body(&parts.headers, &body_bytes)
                 .await;
 
@@ -220,15 +163,7 @@ where
             // relative to it.
             let checked_at = SystemTime::now();
 
-            match check::process_result(
-                result,
-                &user_id,
-                &tier_name,
-                on_storage_error,
-                &on_limited,
-                &rate_limited_response_fn,
-                checked_at,
-            ) {
+            match check::process_result(result, &user_id, &tier_name, &settings, checked_at) {
                 CheckOutcome::Allow(info) => {
                     let req = Request::from_parts(parts, Full::new(body_bytes));
                     let mut resp = inner.call(req).await?;
