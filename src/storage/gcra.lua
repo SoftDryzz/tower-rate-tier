@@ -37,7 +37,7 @@
 --            would let the key expire before the TAT and grant requests
 --            early. PX must be >= 1, so store nothing when the new TAT is
 --            not in the future (a cost of 0 on a fresh bucket).
---   limited  write nothing.
+--   limited  write nothing, except to store a capped TAT (see Safety).
 --
 -- Safety
 --   * Every write carries an expiry, so no key outlives its bucket.
@@ -50,7 +50,9 @@
 --     request for that user.
 --   * A TAT further ahead than one full burst can only come from a clock that
 --     moved back (for example, a failover to a replica whose clock is behind).
---     It is capped, so the wait is never longer than for a full bucket.
+--     It is capped at a full bucket and the cap is stored, even when the
+--     request is limited: otherwise every retry would meet the old TAT again
+--     and the user would stay locked out for as long as the clock moved back.
 --
 -- Pitfalls
 --   * Lua numbers are doubles, exact for integers up to 2^53. That covers
@@ -112,10 +114,12 @@ end
 
 -- Not an integer (this includes NaN) means a corrupted value: start fresh.
 local tat = tonumber(redis.call("GET", KEYS[1]))
+local capped = false
 if tat == nil or tat ~= math.floor(tat) or tat < now then
   tat = now
 elseif tat > now + burst_offset then
   tat = now + burst_offset
+  capped = true
 end
 
 local increment = emission_interval * cost
@@ -126,6 +130,9 @@ local new_tat = tat + increment
 local allow_at = new_tat - burst_offset
 
 if allow_at > now then
+  if capped then
+    redis.call("SET", KEYS[1], tat, "PX", math.ceil((tat - now) / 1000))
+  end
   return { 0, 0, allow_at - now, tat - now }
 end
 

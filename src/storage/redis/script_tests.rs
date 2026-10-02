@@ -720,3 +720,26 @@ fn gcra_script_caps_the_wait_when_the_clock_moves_back() {
     assert_eq!(limited.retry_after, Duration::from_millis(250));
     assert_eq!(limited.reset_after, Duration::from_secs(1));
 }
+
+#[test]
+fn gcra_script_recovers_one_interval_after_the_clock_moves_back() {
+    let fake = fresh();
+    let storage = RedisStorage::new(()).use_client_clock();
+    let quota = Quota::per_second(4);
+    // A TAT 100 s ahead, as left by a server whose clock was ahead.
+    fake.borrow_mut()
+        .data
+        .insert(storage.redis_key(USER), ("101000000".to_owned(), None));
+
+    let limited = script_check(&fake, &storage, &quota, 1, ms(1_000))
+        .expect("script ran")
+        .expect_err("the bucket counts as full");
+    let retry_at = ms(1_000) + limited.retry_after.as_nanos() as u64;
+
+    // Waiting Retry-After must be enough; the old TAT must not keep the user
+    // locked out for the whole 100 s the clock moved back.
+    let info = script_check(&fake, &storage, &quota, 1, retry_at)
+        .expect("script ran")
+        .expect("a client that waits Retry-After is allowed");
+    assert_eq!(info.remaining, 0);
+}
