@@ -9,6 +9,9 @@ repository = "https://github.com/SoftDryzz/tower-rate-tier"
 keywords = ["tower", "rate-limit", "middleware", "tier", "gcra"]
 categories = ["web-programming", "network-programming"]
 
+[package.metadata.docs.rs]
+all-features = true
+
 [dependencies]
 tower-layer = "0.3"
 tower-service = "0.3"

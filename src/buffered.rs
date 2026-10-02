@@ -31,6 +31,8 @@ use crate::tier::RateTier;
 ///
 /// Requests exceeding [`max_body_size`](Self::max_body_size) (default: 64KB)
 /// are immediately rejected with 413 Payload Too Large.
+///
+/// Requires the `buffered-body` feature.
 #[derive(Clone)]
 pub struct BufferedTierLimitLayer {
     pub(crate) rate_tier: Arc<RateTier>,
@@ -71,6 +73,8 @@ impl<S> Layer<S> for BufferedTierLimitLayer {
 /// Tower service that buffers the request body for identification.
 ///
 /// Created by [`BufferedTierLimitLayer`].
+///
+/// Requires the `buffered-body` feature.
 pub struct BufferedTierLimitService<S> {
     inner: S,
     rate_tier: Arc<RateTier>,

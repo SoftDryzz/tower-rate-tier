@@ -33,6 +33,8 @@ pub mod tier;
 
 #[cfg(feature = "buffered-body")]
 /// Buffered-body variants that allow identifier access to the request body.
+///
+/// Requires the `buffered-body` feature.
 pub mod buffered;
 
 pub use cost::{tier_cost, TierCost};

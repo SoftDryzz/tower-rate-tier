@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- docs.rs now builds with all features, so `buffered-body` items are documented
+
 ### Removed
 
 - Unused `tower` and `pin-project-lite` dependencies
