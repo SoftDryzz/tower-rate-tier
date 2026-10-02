@@ -73,6 +73,47 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --features redis --test redis_tests
 
+  # Runs examples/axum_api_key.rs end to end against the Redis service.
+  example-api-key:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      REDIS_URL: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --example axum_api_key --features redis
+      - name: Seed API keys
+        run: |
+          docker exec ${{ job.services.redis.id }} redis-cli SET tier:key_abc123 pro
+          docker exec ${{ job.services.redis.id }} redis-cli SET tier:key_xyz789 free
+      - name: Check the example's responses
+        run: |
+          set -euo pipefail
+          target/debug/examples/axum_api_key &
+          status() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          for _ in $(seq 1 30); do
+            [ "$(status http://localhost:3000/api/data || true)" != "000" ] && break
+            sleep 1
+          done
+          test "$(status -H 'x-api-key: unknown' http://localhost:3000/api/data)" = 401
+          headers=$(curl -s -D - -o /dev/null -H 'x-api-key: key_abc123' http://localhost:3000/api/data)
+          echo "$headers" | grep -qi '^x-ratelimit-limit: 100'
+          # free allows 10 per minute and an export costs 5.
+          for _ in 1 2; do
+            test "$(status -X POST -H 'x-api-key: key_xyz789' http://localhost:3000/api/export)" = 200
+          done
+          test "$(status -X POST -H 'x-api-key: key_xyz789' http://localhost:3000/api/export)" = 429
+
   fmt:
     runs-on: ubuntu-latest
     steps:
