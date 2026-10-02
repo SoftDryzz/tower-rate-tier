@@ -1,3 +1,6 @@
+use std::future::Future;
+use std::pin::pin;
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 use tower_rate_tier::clock::FakeClock;
 use tower_rate_tier::on_missing::OnMissing;
@@ -166,6 +169,21 @@ fn build_works_outside_a_tokio_runtime() {
     rt.block_on(async {
         assert!(limiter.check("u1", "free", 1).await.unwrap().is_ok());
     });
+}
+
+#[test]
+fn check_works_outside_a_tokio_runtime() {
+    // Polled by hand with no runtime at all, as another executor would do.
+    let limiter = RateTier::builder()
+        .tier("free", Quota::per_hour(100))
+        .build();
+
+    let mut check = pin!(limiter.check("u1", "free", 1));
+    let mut cx = Context::from_waker(Waker::noop());
+    match check.as_mut().poll(&mut cx) {
+        Poll::Ready(result) => assert!(result.unwrap().is_ok()),
+        Poll::Pending => panic!("in-memory checks complete immediately"),
+    }
 }
 
 #[test]

@@ -7,9 +7,9 @@ use crate::clock::{Clock, SystemClock};
 use crate::gc::GcHandle;
 use crate::gcra::{RateLimitInfo, RateLimited};
 use crate::on_missing::OnMissing;
-use crate::quota::{Nanos, Quota};
+use crate::quota::Quota;
 use crate::storage::memory::MemoryStorage;
-use crate::storage::{Storage, StorageError, StorageFuture};
+use crate::storage::{Storage, StorageError};
 
 /// Error returned by [`RateTier::check()`].
 ///
@@ -77,12 +77,25 @@ pub struct RateTier {
 
 /// Garbage collector for the built-in `MemoryStorage`.
 ///
-/// The task is spawned by the first check rather than by `build()`, so a
-/// `RateTier` can be built outside a Tokio runtime.
+/// The task needs a Tokio runtime, so it is spawned by `build()` when one is
+/// available and otherwise by the first use of the storage inside one.
 struct LazyGc {
     storage: Arc<MemoryStorage>,
     interval: Duration,
     handle: OnceLock<GcHandle>,
+}
+
+impl LazyGc {
+    /// Spawn the GC task once, if a Tokio runtime is available here.
+    ///
+    /// Without a runtime this does nothing, and a later call tries again.
+    fn ensure_started(&self, clock: &Arc<dyn Clock>) {
+        if self.handle.get().is_none() && tokio::runtime::Handle::try_current().is_ok() {
+            self.handle.get_or_init(|| {
+                GcHandle::spawn(self.storage.clone(), clock.clone(), self.interval)
+            });
+        }
+    }
 }
 
 impl fmt::Debug for RateTier {
@@ -123,7 +136,14 @@ impl RateTier {
     }
 
     /// Get a reference to the storage backend.
+    ///
+    /// Also starts the garbage collector of the built-in storage if it is not
+    /// running yet and a Tokio runtime is available (see
+    /// [`RateTierBuilder::build`]).
     pub fn storage(&self) -> &dyn Storage {
+        if let Some(gc) = &self.gc {
+            gc.ensure_started(&self.clock);
+        }
         self.storage.as_ref()
     }
 
@@ -158,25 +178,10 @@ impl RateTier {
 
         let now = self.clock.now();
         let storage_key = format!("{}:{}", user_id, tier_name);
-        Ok(self.check_storage(&storage_key, quota, cost, now).await?)
-    }
-
-    /// Run a storage check, spawning the GC task first if it has not started.
-    ///
-    /// Must be called from inside a Tokio runtime, like any Tower service.
-    pub(crate) fn check_storage(
-        &self,
-        key: &str,
-        quota: &Quota,
-        cost: u32,
-        now: Nanos,
-    ) -> StorageFuture<'_> {
-        if let Some(gc) = &self.gc {
-            gc.handle.get_or_init(|| {
-                GcHandle::spawn(gc.storage.clone(), self.clock.clone(), gc.interval)
-            });
-        }
-        self.storage.check_and_update(key, quota, cost, now)
+        Ok(self
+            .storage()
+            .check_and_update(&storage_key, quota, cost, now)
+            .await?)
     }
 }
 
@@ -283,8 +288,11 @@ impl RateTierBuilder {
 
     /// Build the `RateTier` configuration.
     ///
-    /// Building does not need a Tokio runtime: the garbage collector for the
-    /// built-in storage is spawned by the first check, which runs inside one.
+    /// Inside a Tokio runtime, the garbage collector of the built-in storage
+    /// starts here. Building also works outside a runtime: the collector then
+    /// starts on the first use of the storage (a check, the middleware or
+    /// [`RateTier::storage`]) that happens inside one, and expired entries are
+    /// kept until then.
     ///
     /// # Panics
     ///
@@ -318,14 +326,18 @@ impl RateTierBuilder {
             }
         };
 
-        RateTier {
+        let rate_tier = RateTier {
             tiers: self.tiers,
             default_tier: self.default_tier,
             on_missing: self.on_missing,
             storage,
             clock,
             gc,
+        };
+        if let Some(gc) = &rate_tier.gc {
+            gc.ensure_started(&rate_tier.clock);
         }
+        rate_tier
     }
 }
 
@@ -334,8 +346,17 @@ mod tests {
     use super::*;
     use crate::clock::FakeClock;
 
-    #[tokio::test(start_paused = true)]
-    async fn gc_starts_on_first_check_and_cleans_expired_entries() {
+    #[tokio::test]
+    async fn gc_starts_at_build_inside_a_runtime() {
+        let limiter = RateTier::builder()
+            .tier("free", Quota::per_second(1))
+            .build();
+        let gc = limiter.gc.as_ref().expect("built-in storage enables GC");
+        assert!(gc.handle.get().is_some());
+    }
+
+    #[test]
+    fn gc_built_outside_a_runtime_starts_on_first_use_and_repeats() {
         let clock = FakeClock::new();
         let limiter = RateTier::builder()
             .tier("free", Quota::per_second(1))
@@ -343,18 +364,26 @@ mod tests {
             .gc_interval(Duration::from_secs(1))
             .build();
         let gc = limiter.gc.as_ref().expect("built-in storage enables GC");
-        assert!(
-            gc.handle.get().is_none(),
-            "GC must not start before a check"
-        );
+        assert!(gc.handle.get().is_none(), "no runtime, so no GC yet");
 
-        limiter.check("u1", "free", 1).await.unwrap().unwrap();
-        assert!(gc.handle.get().is_some(), "first check starts the GC");
-        assert_eq!(gc.storage.len(), 1);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .start_paused(true)
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            limiter.check("u1", "free", 1).await.unwrap().unwrap();
+            assert!(gc.handle.get().is_some(), "first use starts the GC");
 
-        clock.advance(Duration::from_secs(10));
-        tokio::time::advance(Duration::from_secs(1)).await;
-        tokio::task::yield_now().await;
-        assert_eq!(gc.storage.len(), 0, "expired entry must be collected");
+            // The first tick fires at once, while the entry is still live.
+            tokio::task::yield_now().await;
+            assert_eq!(gc.storage.len(), 1);
+
+            // Expire the entry, then move Tokio's paused clock to the next tick.
+            clock.advance(Duration::from_secs(10));
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+            assert_eq!(gc.storage.len(), 0, "a later tick must collect it");
+        });
     }
 }
