@@ -246,10 +246,11 @@ impl RateTierBuilder {
 
     /// Set a custom storage backend.
     ///
-    /// When a custom storage is provided, garbage collection is automatically
-    /// disabled (custom backends are expected to manage their own expiry,
-    /// e.g., Redis TTL). Use [`gc_interval`](Self::gc_interval) to re-enable
-    /// GC if your custom backend needs it.
+    /// Garbage collection never runs for a custom storage, even if
+    /// [`gc_interval`](Self::gc_interval) is called afterwards: custom backends
+    /// are expected to manage their own expiry (e.g., Redis TTL). This also
+    /// applies to a [`MemoryStorage`] passed here; spawn
+    /// [`GcHandle::spawn`] for it yourself if you need cleanup.
     pub fn storage(mut self, storage: Arc<dyn Storage>) -> Self {
         self.storage = Some(storage);
         self.gc_enabled = false;
@@ -258,8 +259,8 @@ impl RateTierBuilder {
 
     /// Set the garbage collection interval for expired entries.
     ///
-    /// Default: 60 seconds. Only applies when using the built-in
-    /// `MemoryStorage` backend.
+    /// Default: 60 seconds. Only applies to the built-in storage; it has no
+    /// effect once [`storage`](Self::storage) has been called.
     ///
     /// # Panics
     ///
