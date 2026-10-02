@@ -2,6 +2,13 @@
 //!
 //! Assign users to named tiers (e.g. "free", "pro") with distinct quotas,
 //! and let the middleware enforce limits automatically via the GCRA algorithm.
+//!
+//! # Features
+//!
+//! - `buffered-body`: identify users from the request body
+//!   (`TierLimitLayer::buffer_body`).
+//! - `redis`: `RedisStorage` keeps the limits in Redis, shared by every
+//!   instance of a service. Requires Rust 1.88.
 
 #![warn(missing_debug_implementations)]
 
