@@ -1,5 +1,6 @@
 use std::fmt;
 
+use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 
 use crate::gcra::check_gcra;
@@ -66,20 +67,23 @@ impl Storage for MemoryStorage {
         let ei = quota.emission_interval_nanos();
         let bo = quota.burst_offset_nanos();
 
-        // Explicitly distinguish first request (None) from subsequent (Some).
-        // This avoids relying on the coincidence that check_gcra treats
-        // Some(now) and None identically.
-        let current_tat = self.state.get(key).map(|e| *e.value());
-
-        let result = match check_gcra(current_tat, now, ei, bo, cost) {
-            Ok((new_tat, info)) => {
-                self.state.insert(key.to_owned(), new_tat);
-                Ok(Ok(info))
+        // The entry holds the shard's write lock from the read to the write, so
+        // concurrent requests for the same key cannot both see the old TAT.
+        // A vacant entry is the first request (None), never Some(now).
+        let result = match self.state.entry(key.to_owned()) {
+            Entry::Occupied(mut slot) => {
+                check_gcra(Some(*slot.get()), now, ei, bo, cost).map(|(new_tat, info)| {
+                    slot.insert(new_tat);
+                    info
+                })
             }
-            Err(limited) => Ok(Err(limited)),
+            Entry::Vacant(slot) => check_gcra(None, now, ei, bo, cost).map(|(new_tat, info)| {
+                slot.insert(new_tat);
+                info
+            }),
         };
 
-        Box::pin(std::future::ready(result))
+        Box::pin(std::future::ready(Ok(result)))
     }
 }
 

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Barrier};
 use std::time::Duration;
 
 use tower_rate_tier::clock::{Clock, FakeClock};
@@ -131,35 +131,45 @@ async fn remaining_accuracy() {
     }
 }
 
-#[tokio::test]
-async fn concurrent_access() {
-    let storage = Arc::new(MemoryStorage::new());
+#[test]
+fn concurrent_access() {
+    // OS threads released together by a barrier, so the checks really overlap.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
     let q = Quota::per_second(100);
     let now = 1_000_000_000;
 
-    let mut handles = Vec::new();
-    for _ in 0..200 {
-        let s = storage.clone();
-        let quota = q;
-        handles.push(tokio::spawn(async move {
-            s.check_and_update("shared", &quota, 1, now)
-                .await
-                .unwrap()
-                .is_ok()
-        }));
-    }
+    for round in 0..20 {
+        let storage = Arc::new(MemoryStorage::new());
+        let barrier = Arc::new(Barrier::new(200));
 
-    let mut allowed = 0;
-    for h in handles {
-        if h.await.unwrap() {
-            allowed += 1;
-        }
-    }
+        let handles: Vec<_> = (0..200)
+            .map(|_| {
+                let s = storage.clone();
+                let b = barrier.clone();
+                let handle = rt.handle().clone();
+                std::thread::spawn(move || {
+                    b.wait();
+                    handle
+                        .block_on(s.check_and_update("shared", &q, 1, now))
+                        .unwrap()
+                        .is_ok()
+                })
+            })
+            .collect();
 
-    assert_eq!(
-        allowed, 100,
-        "exactly 100 of 200 requests should be allowed"
-    );
+        let allowed = handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .filter(|ok| *ok)
+            .count();
+
+        assert_eq!(
+            allowed, 100,
+            "round {round}: exactly 100 of 200 requests should be allowed"
+        );
+    }
 }
 
 #[tokio::test]
