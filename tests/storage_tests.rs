@@ -244,6 +244,16 @@ async fn gc_cleans_expired_entries() {
     assert_eq!(storage.len(), 0);
 }
 
+#[tokio::test]
+#[should_panic(expected = "gc interval must be non-zero")]
+async fn gc_handle_rejects_zero_interval() {
+    let _gc = GcHandle::spawn(
+        Arc::new(MemoryStorage::new()),
+        Arc::new(FakeClock::new()),
+        Duration::ZERO,
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn gc_handle_aborts_on_drop() {
     let clock = FakeClock::new();

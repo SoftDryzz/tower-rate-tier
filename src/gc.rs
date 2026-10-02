@@ -16,7 +16,12 @@ pub struct GcHandle {
 
 impl GcHandle {
     /// Spawn a background task that periodically cleans expired entries.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `interval` is zero, or if called outside a Tokio runtime.
     pub fn spawn(storage: Arc<MemoryStorage>, clock: Arc<dyn Clock>, interval: Duration) -> Self {
+        assert!(!interval.is_zero(), "gc interval must be non-zero");
         let handle = tokio::spawn(async move {
             let mut tick = tokio::time::interval(interval);
             loop {
