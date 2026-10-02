@@ -7,7 +7,7 @@ use std::task::{Context, Poll};
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
 use http_body::Body;
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
 use tower_layer::Layer;
 use tower_service::Service;
 
@@ -31,7 +31,9 @@ use crate::tier::RateTier;
 /// # Body size limit
 ///
 /// Requests exceeding [`max_body_size`](Self::max_body_size) (default: 64KB)
-/// are immediately rejected with 413 Payload Too Large.
+/// are rejected with 413 Payload Too Large. A body whose declared length
+/// (e.g. `Content-Length`) is over the limit is rejected without being read;
+/// otherwise reading stops at the first chunk that crosses the limit.
 ///
 /// Requires the `buffered-body` feature.
 #[derive(Clone)]
@@ -163,14 +165,17 @@ where
             // Split request to buffer body separately
             let (parts, body) = req.into_parts();
 
-            // Collect the body
-            let body_bytes = match body.collect().await {
-                Ok(collected) => {
-                    let bytes = collected.to_bytes();
-                    if bytes.len() > max_body_size {
-                        return Ok(payload_too_large_response().map(Into::into));
-                    }
-                    bytes
+            // A body that already declares more than the limit is never read.
+            if body.size_hint().lower() > max_body_size as u64 {
+                return Ok(payload_too_large_response().map(Into::into));
+            }
+
+            // `Limited` fails on the first frame that crosses the limit, so at
+            // most `max_body_size` bytes (plus that frame) are ever buffered.
+            let body_bytes = match Limited::new(body, max_body_size).collect().await {
+                Ok(collected) => collected.to_bytes(),
+                Err(err) if err.is::<LengthLimitError>() => {
+                    return Ok(payload_too_large_response().map(Into::into));
                 }
                 Err(_) => {
                     return Ok(response::bad_request_response().map(Into::into));
