@@ -36,7 +36,8 @@ pub trait TierIdentifier: Send + Sync + 'static {
 
     /// Identify the user from request headers and body.
     ///
-    /// Only called when `buffer_body(true)` is enabled.
+    /// Only called by the layer returned from `TierLimitLayer::buffer_body()`
+    /// (requires the `buffered-body` feature).
     /// Default implementation delegates to [`identify`](TierIdentifier::identify).
     fn identify_with_body(
         &self,
