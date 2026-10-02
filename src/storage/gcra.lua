@@ -2,8 +2,11 @@
 --
 -- Redis runs the whole script atomically: no other command touches the key
 -- while it executes, so concurrent requests from any instance are safe.
--- The Rust reference implementation is `check_gcra` in src/gcra.rs, and
--- tests/redis_tests.rs compares this script's results with it.
+-- The Rust reference implementation is `check_gcra` in src/gcra.rs. Two
+-- test suites compare this script's results with it:
+--   cargo test --features redis --lib gcra_script   (embedded Lua 5.1, no
+--                                                     Redis server needed)
+--   cargo test --features redis --test redis_tests  (a real Redis)
 --
 -- TODO: implement the check described below.
 --
@@ -31,10 +34,11 @@
 --                   nothing.
 --
 -- Effects
---   allowed  store the new TAT so it expires exactly when the bucket is full
---            again (SET key value PX ms). PX must be >= 1, so store nothing
---            when the new TAT is not in the future (a cost of 0 on a fresh
---            bucket).
+--   allowed  store the new TAT with SET key value PX ms, where ms is the
+--            time until the bucket is full again, rounded UP: rounding down
+--            would let the key expire before the TAT and grant requests
+--            early. PX must be >= 1, so store nothing when the new TAT is
+--            not in the future (a cost of 0 on a fresh bucket).
 --   limited  write nothing.
 --
 -- Pitfalls the tests check

@@ -129,6 +129,35 @@ impl<C> RedisStorage<C> {
     }
 }
 
+/// The key and arguments of one GCRA script call.
+#[derive(Debug)]
+struct ScriptCall {
+    key: String,
+    /// Microseconds since the Unix epoch, or empty to use Redis's `TIME`.
+    now: String,
+    emission_interval: u64,
+    burst_offset: u64,
+    cost: u32,
+}
+
+impl<C> RedisStorage<C> {
+    /// Builds the script's arguments, in microseconds.
+    fn script_call(&self, key: StorageKey<'_>, quota: &Quota, cost: u32, now: Nanos) -> ScriptCall {
+        let emission_interval = micros_ceil(quota.emission_interval_nanos()).max(1);
+        ScriptCall {
+            key: self.redis_key(key),
+            now: if self.client_clock {
+                (now / 1_000).to_string()
+            } else {
+                String::new()
+            },
+            emission_interval,
+            burst_offset: emission_interval.saturating_mul(u64::from(quota.max_burst())),
+            cost,
+        }
+    }
+}
+
 impl<C> fmt::Debug for RedisStorage<C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RedisStorage")
@@ -152,22 +181,14 @@ where
         now: Nanos,
     ) -> StorageFuture<'a> {
         Box::pin(async move {
-            let emission_interval = micros_ceil(quota.emission_interval_nanos()).max(1);
-            let burst_offset = emission_interval.saturating_mul(u64::from(quota.max_burst()));
-            // An empty time tells the script to read Redis's own clock.
-            let now_arg = if self.client_clock {
-                (now / 1_000).to_string()
-            } else {
-                String::new()
-            };
-
+            let call = self.script_call(key, quota, cost, now);
             let mut invocation = self.script.prepare_invoke();
             invocation
-                .key(self.redis_key(key))
-                .arg(now_arg)
-                .arg(emission_interval)
-                .arg(burst_offset)
-                .arg(cost);
+                .key(call.key)
+                .arg(call.now)
+                .arg(call.emission_interval)
+                .arg(call.burst_offset)
+                .arg(call.cost);
 
             let mut conn = self.conn.clone();
             let call = invocation.invoke_async::<Reply>(&mut conn);
@@ -207,6 +228,9 @@ fn decode_reply(
         })
     }
 }
+
+#[cfg(test)]
+mod script_tests;
 
 #[cfg(test)]
 mod tests {

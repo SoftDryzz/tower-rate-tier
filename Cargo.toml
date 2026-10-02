@@ -27,6 +27,8 @@ sha1_smol = { version = "1", optional = true }
 [dev-dependencies]
 axum = "0.8"
 tower = { version = "0.5", features = ["util"] }
+# Runs the Redis GCRA script in an embedded Lua 5.1, the version Redis uses.
+mlua = { version = "0.12", features = ["lua51", "vendored"] }
 tokio = { version = "1", features = ["full", "test-util"] }
 hyper = "1"
 serde = { version = "1", features = ["derive"] }
