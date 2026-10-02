@@ -43,6 +43,36 @@ jobs:
       - run: cargo check
       - run: cargo check --features buffered-body
 
+  # redis 1.x needs Rust 1.88, so the redis feature has its own MSRV.
+  msrv-redis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88"
+      - run: cargo check --features redis
+
+  redis:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      REDIS_URL: redis://127.0.0.1:6379
+      TRT_REQUIRE_REDIS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --features redis --test redis_tests
+
   fmt:
     runs-on: ubuntu-latest
     steps:
