@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use http::header::HeaderValue;
 use http::{Response, StatusCode};
 
-use crate::gcra::{RateLimitInfo, RateLimited};
+use crate::gcra::{ceil_secs, RateLimitInfo, RateLimited};
 
 /// Inject `X-RateLimit-*` headers into a successful response.
 ///
@@ -29,7 +29,7 @@ pub fn rate_limited_response(
     tier: &str,
     now: SystemTime,
 ) -> Response<String> {
-    let retry_after_secs = ceil_secs(limited.retry_after);
+    let retry_after_secs = limited.retry_after_secs();
 
     let escaped_tier = escape_json_string(tier);
     let body = format!(
@@ -93,12 +93,6 @@ fn reset_header_value(reset_after: Duration, now: SystemTime) -> HeaderValue {
         .and_then(|reset| reset.duration_since(UNIX_EPOCH).ok())
         .map_or(u64::MAX, ceil_secs);
     HeaderValue::from(secs)
-}
-
-/// Whole seconds, rounded up.
-fn ceil_secs(duration: Duration) -> u64 {
-    let round_up = u64::from(duration.subsec_nanos() > 0);
-    duration.as_secs().saturating_add(round_up)
 }
 
 /// Build a 400 Bad Request response for body read errors.

@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Added
 
 - `Debug` implementations for all public types (`MemoryStorage` shows only its entry count, never user keys)
+- `RateLimited::retry_after_secs()` rounds the wait up to whole seconds for a `Retry-After` header; the custom 429 examples use it
 - `TierLimitLayer::cost_fn()` computes each request's cost inside the middleware from its method, URI, headers and extensions (including axum's `MatchedPath`)
 - `TierLimitLayer::on_event()` callback and `LimitEvent` enum, starting with `LimitEvent::StorageError`, so storage failures are visible even when the request fails open
 - `OnUnknownTier` policy (`RateTierBuilder::on_unknown_tier()`) and `LimitEvent::UnknownTier` for tiers that are not configured

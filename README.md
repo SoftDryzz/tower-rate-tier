@@ -110,7 +110,7 @@ let layer = TierLimitLayer::new(tier)
         Response::builder()
             .status(StatusCode::TOO_MANY_REQUESTS)
             .header("Content-Type", "application/problem+json")
-            .header("Retry-After", limited.retry_after.as_secs())
+            .header("Retry-After", limited.retry_after_secs())
             .body(format!(r#"{{"type":"rate_limit","tier":"{}"}}"#, tier))
             .unwrap()
     });

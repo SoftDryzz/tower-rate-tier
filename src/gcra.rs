@@ -30,6 +30,21 @@ pub struct RateLimited {
     pub reset_after: Duration,
 }
 
+impl RateLimited {
+    /// [`retry_after`](Self::retry_after) in whole seconds, rounded up, for a
+    /// `Retry-After` header. A client that waits this long is allowed;
+    /// rounding down would make it retry too early.
+    pub fn retry_after_secs(&self) -> u64 {
+        ceil_secs(self.retry_after)
+    }
+}
+
+/// Whole seconds, rounded up.
+pub(crate) fn ceil_secs(duration: Duration) -> u64 {
+    let round_up = u64::from(duration.subsec_nanos() > 0);
+    duration.as_secs().saturating_add(round_up)
+}
+
 /// Perform a GCRA (Generic Cell Rate Algorithm) check.
 ///
 /// # Arguments

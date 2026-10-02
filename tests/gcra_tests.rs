@@ -201,3 +201,19 @@ fn cost_zero_allowed_without_consuming() {
     let (_, info) = check_gcra(None, now, ei, bo, 0).unwrap();
     assert_eq!(info.remaining, 5);
 }
+
+#[test]
+fn retry_after_secs_rounds_up() {
+    let limited = |retry_after| tower_rate_tier::RateLimited {
+        limit: 1,
+        retry_after,
+        reset_after: Duration::from_secs(60),
+    };
+
+    assert_eq!(
+        limited(Duration::from_millis(29_500)).retry_after_secs(),
+        30
+    );
+    assert_eq!(limited(Duration::from_millis(1)).retry_after_secs(), 1);
+    assert_eq!(limited(Duration::from_secs(30)).retry_after_secs(), 30);
+}
