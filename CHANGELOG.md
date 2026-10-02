@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - GCRA overflow with very large costs: it panicked in debug builds, and in release builds it allowed the request and reset the user's state
 - `max_body_size` buffered the whole request body before checking its size; it now rejects bodies whose declared length is over the limit without reading them, and stops reading at the first chunk that crosses the limit
 - `RateTierBuilder::build()` panicked outside a Tokio runtime; the garbage collector now starts with the first check instead
+- `gc_interval(Duration::ZERO)` silently killed the garbage collector task; it now panics in the builder
 - Quotas faster than one request per nanosecond (e.g. `Quota::per_second(2_000_000_000)`) now panic when built instead of panicking with a division by zero on every check
 - docs.rs now builds with all features, so `buffered-body` items are documented
 - `TierLimitLayer` docs and example were attached to the `OnLimitedFn` alias

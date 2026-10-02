@@ -168,6 +168,12 @@ fn build_works_outside_a_tokio_runtime() {
     });
 }
 
+#[test]
+#[should_panic(expected = "gc interval must be non-zero")]
+fn zero_gc_interval_panics() {
+    let _ = RateTier::builder().gc_interval(Duration::ZERO);
+}
+
 #[tokio::test]
 async fn build_with_custom_gc_interval() {
     let _limiter = RateTier::builder()

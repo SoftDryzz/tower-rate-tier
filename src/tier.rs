@@ -260,7 +260,12 @@ impl RateTierBuilder {
     ///
     /// Default: 60 seconds. Only applies when using the built-in
     /// `MemoryStorage` backend.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `interval` is zero.
     pub fn gc_interval(mut self, interval: Duration) -> Self {
+        assert!(!interval.is_zero(), "gc interval must be non-zero");
         self.gc_interval = interval;
         self.gc_enabled = true;
         self
