@@ -184,7 +184,7 @@ async fn test_rate_limit_expiry() {
 
 ```rust
 let tier = RateTier::builder()
-    .on_missing(OnMissing::UseDefault)           // Use default tier
+    .on_missing(OnMissing::UseDefault)           // Use default tier (403 if none is set)
     // .on_missing(OnMissing::Allow)              // No rate limiting
     // .on_missing(OnMissing::Deny(StatusCode::FORBIDDEN)) // Block
     .build();

@@ -40,13 +40,12 @@ pub(crate) fn resolve_identity(
         None => match rate_tier.on_missing() {
             OnMissing::Allow => Err(CheckOutcome::PassThrough),
             OnMissing::Deny(status) => Err(CheckOutcome::Deny(response::deny_response(status))),
-            OnMissing::UseDefault => {
-                if let Some(default) = rate_tier.default_tier() {
-                    Ok(("__anonymous__".to_string(), default.to_string()))
-                } else {
-                    Err(CheckOutcome::PassThrough)
-                }
-            }
+            OnMissing::UseDefault => match rate_tier.default_tier() {
+                Some(default) => Ok(("__anonymous__".to_string(), default.to_string())),
+                None => Err(CheckOutcome::Deny(response::deny_response(
+                    StatusCode::FORBIDDEN,
+                ))),
+            },
         },
     }
 }

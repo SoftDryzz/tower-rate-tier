@@ -536,3 +536,18 @@ async fn unknown_tier_inherits_an_unlimited_default_tier() {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 }
+
+#[tokio::test]
+async fn unidentified_request_without_a_default_tier_is_forbidden() {
+    // OnMissing::UseDefault is the default policy, but there is no default tier.
+    let rate_tier = RateTier::builder()
+        .tier("free", Quota::per_second(1))
+        .clock(FakeClock::new())
+        .build();
+    let mut svc = TierLimitLayer::new(rate_tier)
+        .identifier_fn(|_| None)
+        .layer(OkService);
+
+    let resp = svc.call(build_request(None)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}

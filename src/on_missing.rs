@@ -4,7 +4,9 @@ use http::StatusCode;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OnMissing {
-    /// Use the default tier's quota.
+    /// Use the default tier's quota. All unidentified requests share one
+    /// bucket. Without a default tier, the request is denied with 403
+    /// Forbidden; use [`OnMissing::Allow`] to let it through instead.
     #[default]
     UseDefault,
     /// Allow the request through without rate limiting.
