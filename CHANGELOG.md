@@ -32,6 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - The README and the `axum_basic` example set per-route costs with a route's own `.layer(tier_cost(n))` under a limiter added with `Router::layer`. That layer runs after the limiter, so the cost was silently ignored and every request cost 1. They now use `cost_fn`, and the `tier_cost` docs explain the order it needs
 - A request costing more than the tier's maximum burst was answered with 429 and a `Retry-After` that never helped. It is now rejected without touching storage: the middleware answers 403 Forbidden with no `Retry-After`, and `RateTier::check()` returns `CheckError::CostExceedsLimit`
 - A user in one tier could share a bucket with another user in another tier when the names contained `:` (user `a:b` in tier `c` and user `a` in tier `b:c` were both stored as `a:b:c`)
+- `X-RateLimit-Reset` is 0, not `u64::MAX`, if the system clock is set before the Unix epoch
 - `X-RateLimit-Reset` on a 429 counted the rejected request, so it reported the reset one emission interval (times the request cost) too late
 - `Retry-After` was rounded down, so a client that waited exactly that long was rejected again. It is now rounded up, and the JSON body's `retry_after` always matches the header
 - `MemoryStorage` let concurrent requests for the same key exceed the quota, because the check and the update were not atomic

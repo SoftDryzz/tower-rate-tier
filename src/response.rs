@@ -87,11 +87,14 @@ pub fn storage_error_response() -> Response<String> {
 }
 
 /// Unix timestamp, in whole seconds rounded up, of `now + reset_after`.
+///
+/// Saturates at `u64::MAX` past the end of `SystemTime` and at 0 before the
+/// Unix epoch.
 fn reset_header_value(reset_after: Duration, now: SystemTime) -> HeaderValue {
-    let secs = now
-        .checked_add(reset_after)
-        .and_then(|reset| reset.duration_since(UNIX_EPOCH).ok())
-        .map_or(u64::MAX, ceil_secs);
+    let secs = match now.checked_add(reset_after) {
+        Some(reset) => reset.duration_since(UNIX_EPOCH).map_or(0, ceil_secs),
+        None => u64::MAX,
+    };
     HeaderValue::from(secs)
 }
 
@@ -176,5 +179,20 @@ mod tests {
         inject_headers(&mut resp, &info, now);
 
         assert_eq!(resp.headers()["x-ratelimit-reset"], "1003");
+    }
+
+    #[test]
+    fn reset_header_is_zero_when_the_clock_is_before_the_epoch() {
+        let now = UNIX_EPOCH - Duration::from_secs(10);
+        let info = RateLimitInfo {
+            limit: 10,
+            remaining: 9,
+            reset_after: Duration::from_secs(1),
+        };
+        let mut resp = Response::new(());
+
+        inject_headers(&mut resp, &info, now);
+
+        assert_eq!(resp.headers()["x-ratelimit-reset"], "0");
     }
 }
