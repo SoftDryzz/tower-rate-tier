@@ -61,9 +61,9 @@ refactor: simplify storage trait bounds
 3. Run all checks before submitting:
    ```bash
    cargo fmt --check
-   cargo clippy -- -D warnings
-   cargo test
-   cargo test --features buffered-body
+   cargo clippy --all-features --all-targets -- -D warnings
+   cargo test --all-features
+   cargo test --no-default-features
    ```
 4. Open a PR against `main` with a clear description of what and why
 5. Link any related issues
@@ -71,7 +71,7 @@ refactor: simplify storage trait bounds
 ### Code Style
 
 - Run `cargo fmt` before committing
-- No Clippy warnings (`cargo clippy -- -D warnings`)
+- No Clippy warnings (`cargo clippy --all-features --all-targets -- -D warnings`)
 - Add doc comments (`///`) for all public items
 - Keep unsafe code out — this crate is 100% safe Rust
 - Prefer simple, readable code over clever abstractions

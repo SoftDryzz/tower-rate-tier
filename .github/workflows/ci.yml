@@ -10,13 +10,28 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
+  check:
+    name: check (${{ matrix.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: no features
+            flags: --no-default-features
+          - name: buffered-body
+            flags: --no-default-features --features buffered-body
+          - name: redis
+            flags: --no-default-features --features redis
+          - name: all features
+            flags: --all-features
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --all-features
-      - run: cargo test --no-default-features
+        with:
+          components: clippy
+      - run: cargo clippy ${{ matrix.flags }} --all-targets -- -D warnings
+      - run: cargo test ${{ matrix.flags }}
 
   msrv:
     runs-on: ubuntu-latest
@@ -27,15 +42,6 @@ jobs:
           toolchain: "1.75"
       - run: cargo check
       - run: cargo check --features buffered-body
-
-  clippy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - run: cargo clippy --all-features -- -D warnings
 
   fmt:
     runs-on: ubuntu-latest
