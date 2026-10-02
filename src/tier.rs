@@ -7,6 +7,7 @@ use crate::clock::{Clock, SystemClock};
 use crate::gc::GcHandle;
 use crate::gcra::{RateLimitInfo, RateLimited};
 use crate::on_missing::OnMissing;
+use crate::on_unknown_tier::OnUnknownTier;
 use crate::quota::Quota;
 use crate::storage::memory::MemoryStorage;
 use crate::storage::{Storage, StorageError, StorageKey};
@@ -86,6 +87,7 @@ pub struct RateTier {
     tiers: HashMap<String, Quota>,
     default_tier: Option<String>,
     on_missing: OnMissing,
+    on_unknown_tier: OnUnknownTier,
     storage: Arc<dyn Storage>,
     clock: Arc<dyn Clock>,
     gc: Option<LazyGc>,
@@ -120,6 +122,7 @@ impl fmt::Debug for RateTier {
             .field("tiers", &self.tiers)
             .field("default_tier", &self.default_tier)
             .field("on_missing", &self.on_missing)
+            .field("on_unknown_tier", &self.on_unknown_tier)
             .field("gc_enabled", &self.gc.is_some())
             .finish_non_exhaustive()
     }
@@ -139,6 +142,11 @@ impl RateTier {
     /// Get the on_missing policy.
     pub fn on_missing(&self) -> OnMissing {
         self.on_missing
+    }
+
+    /// Get the policy for tiers that are not configured.
+    pub fn on_unknown_tier(&self) -> OnUnknownTier {
+        self.on_unknown_tier
     }
 
     /// Get the default tier name, if set.
@@ -215,6 +223,7 @@ pub struct RateTierBuilder {
     tiers: HashMap<String, Quota>,
     default_tier: Option<String>,
     on_missing: OnMissing,
+    on_unknown_tier: OnUnknownTier,
     clock: Option<Arc<dyn Clock>>,
     storage: Option<Arc<dyn Storage>>,
     gc_interval: Duration,
@@ -227,6 +236,7 @@ impl Default for RateTierBuilder {
             tiers: HashMap::new(),
             default_tier: None,
             on_missing: OnMissing::default(),
+            on_unknown_tier: OnUnknownTier::default(),
             clock: None,
             storage: None,
             gc_interval: Duration::from_secs(60),
@@ -241,6 +251,7 @@ impl fmt::Debug for RateTierBuilder {
             .field("tiers", &self.tiers)
             .field("default_tier", &self.default_tier)
             .field("on_missing", &self.on_missing)
+            .field("on_unknown_tier", &self.on_unknown_tier)
             .field("custom_clock", &self.clock.is_some())
             .field("custom_storage", &self.storage.is_some())
             .field("gc_interval", &self.gc_interval)
@@ -265,6 +276,13 @@ impl RateTierBuilder {
     /// Set the behavior when the identifier returns `None`.
     pub fn on_missing(mut self, policy: OnMissing) -> Self {
         self.on_missing = policy;
+        self
+    }
+
+    /// Set the behavior when the identifier returns a tier that is not
+    /// configured. Default: [`OnUnknownTier::UseDefault`].
+    pub fn on_unknown_tier(mut self, policy: OnUnknownTier) -> Self {
+        self.on_unknown_tier = policy;
         self
     }
 
@@ -355,6 +373,7 @@ impl RateTierBuilder {
             tiers: self.tiers,
             default_tier: self.default_tier,
             on_missing: self.on_missing,
+            on_unknown_tier: self.on_unknown_tier,
             storage,
             clock,
             gc,

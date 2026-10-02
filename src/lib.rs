@@ -24,6 +24,8 @@ pub mod layer;
 pub mod on_missing;
 /// Policy for handling storage backend errors.
 pub mod on_storage_error;
+/// Policy for handling tiers that are not configured.
+pub mod on_unknown_tier;
 /// Quota definitions (rate, burst, period).
 pub mod quota;
 /// HTTP response helpers for rate-limit headers and 429 replies.
@@ -48,6 +50,7 @@ pub use identifier::{TierIdentifier, TierIdentity};
 pub use layer::TierLimitLayer;
 pub use on_missing::OnMissing;
 pub use on_storage_error::OnStorageError;
+pub use on_unknown_tier::OnUnknownTier;
 pub use quota::{Nanos, Quota};
 pub use storage::{StorageError, StorageKey};
 pub use tier::{CheckError, RateTier};

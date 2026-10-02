@@ -438,3 +438,81 @@ async fn cost_above_the_tier_limit_is_forbidden_without_retry_after() {
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(resp.headers()["x-ratelimit-remaining"], "1");
 }
+
+fn request_with_tier(api_key: &str, tier: &str) -> Request<String> {
+    Request::builder()
+        .header("x-api-key", api_key)
+        .header("x-tier", tier)
+        .body(String::new())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn unknown_tier_gets_the_default_quota_in_its_own_bucket() {
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = events.clone();
+    let mut svc = make_layer(FakeClock::new())
+        .on_event(move |event| {
+            if let tower_rate_tier::LimitEvent::UnknownTier { user_id, tier } = event {
+                seen.lock().unwrap().push(format!("{user_id}: {tier}"));
+            }
+        })
+        .layer(OkService);
+
+    // The client picks the tier header; an unknown one must not lift the limit.
+    for _ in 0..2 {
+        let resp = svc.call(request_with_tier("user1", "zzz")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers()["x-ratelimit-limit"], "2");
+    }
+    let resp = svc.call(request_with_tier("user1", "zzz")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(events.lock().unwrap().len(), 3);
+    assert_eq!(events.lock().unwrap()[0], "user1: zzz");
+
+    // Other users keep their own buckets.
+    let resp = svc.call(request_with_tier("user2", "zzz")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn unknown_tier_without_a_default_tier_is_forbidden() {
+    let rate_tier = RateTier::builder()
+        .tier("free", Quota::per_second(2))
+        .clock(FakeClock::new())
+        .build();
+    let mut svc = TierLimitLayer::new(rate_tier)
+        .identifier_fn(|_| Some(TierIdentity::new("u1", "zzz")))
+        .layer(OkService);
+
+    let resp = svc.call(build_request(None)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn unknown_tier_policy_can_deny_or_allow() {
+    let build = |policy| {
+        let rate_tier = RateTier::builder()
+            .tier("free", Quota::per_second(1))
+            .default_tier("free")
+            .on_unknown_tier(policy)
+            .clock(FakeClock::new())
+            .build();
+        TierLimitLayer::new(rate_tier)
+            .identifier_fn(|_| Some(TierIdentity::new("u1", "zzz")))
+            .layer(OkService)
+    };
+
+    let mut deny = build(tower_rate_tier::OnUnknownTier::Deny(
+        StatusCode::INTERNAL_SERVER_ERROR,
+    ));
+    let resp = deny.call(build_request(None)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    let mut allow = build(tower_rate_tier::OnUnknownTier::Allow);
+    for _ in 0..5 {
+        let resp = allow.call(build_request(None)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(!resp.headers().contains_key("x-ratelimit-limit"));
+    }
+}

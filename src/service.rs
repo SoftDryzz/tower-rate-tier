@@ -59,10 +59,12 @@ where
                 Err(CheckOutcome::Allow(_)) => unreachable!(),
             };
 
-            let quota = match check::resolve_quota(&rate_tier, &tier_name) {
-                Ok(q) => q,
+            let resolved = check::resolve_quota(&rate_tier, &user_id, tier_name, &settings);
+            let (tier_name, quota) = match resolved {
+                Ok(resolved) => resolved,
                 Err(CheckOutcome::PassThrough) => return inner.call(req).await,
-                Err(_) => unreachable!(),
+                Err(CheckOutcome::Deny(resp)) => return Ok(resp.map(Into::into)),
+                Err(CheckOutcome::Allow(_)) => unreachable!(),
             };
 
             let cost = req.extensions().get::<TierCost>().map(|c| c.0).unwrap_or(1);

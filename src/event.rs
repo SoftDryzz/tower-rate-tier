@@ -18,6 +18,14 @@ pub enum LimitEvent<'a> {
         /// The error returned by the backend.
         error: &'a StorageError,
     },
+    /// The identifier returned a tier that is not configured. The request was
+    /// then handled by the [`OnUnknownTier`](crate::OnUnknownTier) policy.
+    UnknownTier {
+        /// The identified user.
+        user_id: &'a str,
+        /// The tier name the identifier returned.
+        tier: &'a str,
+    },
     /// A request cost more than the tier allows in a whole window, so it was
     /// rejected without touching storage.
     CostExceedsLimit {

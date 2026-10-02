@@ -5,7 +5,7 @@
 
 use std::time::SystemTime;
 
-use http::Response;
+use http::{Response, StatusCode};
 
 use crate::event::LimitEvent;
 use crate::gcra::RateLimitInfo;
@@ -13,6 +13,7 @@ use crate::identifier::TierIdentity;
 use crate::layer::Settings;
 use crate::on_missing::OnMissing;
 use crate::on_storage_error::OnStorageError;
+use crate::on_unknown_tier::OnUnknownTier;
 use crate::quota::Quota;
 use crate::response;
 use crate::tier::RateTier;
@@ -49,17 +50,50 @@ pub(crate) fn resolve_identity(
     }
 }
 
-/// Check whether the tier exists and is not unlimited.
-/// Returns the quota if rate limiting should proceed, or a `CheckOutcome` to short-circuit.
+/// Find the quota that applies to `tier_name`, applying the
+/// [`OnUnknownTier`] policy when the tier is not configured.
+///
+/// Returns the tier whose quota applies (the default tier for an unknown
+/// one) and that quota, or a `CheckOutcome` to short-circuit.
 pub(crate) fn resolve_quota<'a>(
     rate_tier: &'a RateTier,
-    tier_name: &str,
-) -> Result<&'a Quota, CheckOutcome> {
-    match rate_tier.get_quota(tier_name) {
-        Some(q) if q.is_unlimited() => Err(CheckOutcome::PassThrough),
-        Some(q) => Ok(q),
-        None => Err(CheckOutcome::PassThrough),
+    user_id: &str,
+    tier_name: String,
+    settings: &Settings,
+) -> Result<(String, &'a Quota), CheckOutcome> {
+    let (tier_name, quota) = match rate_tier.get_quota(&tier_name) {
+        Some(quota) => (tier_name, quota),
+        None => {
+            if let Some(cb) = &settings.on_event {
+                cb(&LimitEvent::UnknownTier {
+                    user_id,
+                    tier: &tier_name,
+                });
+            }
+            match rate_tier.on_unknown_tier() {
+                OnUnknownTier::Allow => return Err(CheckOutcome::PassThrough),
+                OnUnknownTier::Deny(status) => {
+                    return Err(CheckOutcome::Deny(response::deny_response(status)));
+                }
+                OnUnknownTier::UseDefault => {
+                    let default = rate_tier
+                        .default_tier()
+                        .and_then(|name| rate_tier.get_quota(name).map(|quota| (name, quota)));
+                    match default {
+                        Some((name, quota)) => (name.to_owned(), quota),
+                        None => {
+                            let resp = response::deny_response(StatusCode::FORBIDDEN);
+                            return Err(CheckOutcome::Deny(resp));
+                        }
+                    }
+                }
+            }
+        }
+    };
+    if quota.is_unlimited() {
+        return Err(CheckOutcome::PassThrough);
     }
+    Ok((tier_name, quota))
 }
 
 /// Reject a request whose cost is above the tier's maximum burst.

@@ -280,3 +280,17 @@ async fn cost_above_the_tier_limit_is_forbidden() {
 
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn unknown_tier_in_body_gets_the_default_quota() {
+    let mut svc = make_buffered_layer(FakeClock::new()).layer(EchoService);
+    let body = r#"{"user_id": "alice", "tier": "zzz"}"#;
+
+    // free (the default) allows 2/sec.
+    for _ in 0..2 {
+        let resp = svc.call(json_request(body)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+    let resp = svc.call(json_request(body)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+}

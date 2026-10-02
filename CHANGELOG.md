@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - `Debug` implementations for all public types (`MemoryStorage` shows only its entry count, never user keys)
 - `TierLimitLayer::on_event()` callback and `LimitEvent` enum, starting with `LimitEvent::StorageError`, so storage failures are visible even when the request fails open
+- `OnUnknownTier` policy (`RateTierBuilder::on_unknown_tier()`) and `LimitEvent::UnknownTier` for tiers that are not configured
 - `CheckError::CostExceedsLimit` and `LimitEvent::CostExceedsLimit` for requests that cost more than the tier's maximum burst
 - `TierLimitLayer::new()` also accepts an `Arc<RateTier>`, so the middleware and programmatic `RateTier::check()` calls can share one set of limits
 
@@ -40,6 +41,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - docs.rs now builds with all features, so `buffered-body` items are documented
 - `TierLimitLayer` docs and example were attached to the `OnLimitedFn` alias
 - `identify_with_body` docs referenced a nonexistent `buffer_body(true)` signature
+
+### Security
+
+- A tier name the middleware did not know (a typo, a new plan, or a value a client could influence, such as a header) let the request through with no rate limit at all. By default it now gets the default tier's quota in the user's own bucket, or 403 Forbidden when no default tier is set; `OnUnknownTier` can choose `Deny` or an explicit `Allow`
 
 ## [0.2.0] - 2026-03-17
 
