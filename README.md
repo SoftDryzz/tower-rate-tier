@@ -123,8 +123,17 @@ let layer = TierLimitLayer::new(tier)
     .identifier_fn(|headers| { /* ... */ None })
     .on_limited(|user_id, tier, limited| {
         eprintln!("rate limited: user={user_id} tier={tier} retry_after={:?}", limited.retry_after);
+    })
+    .on_event(|event| match event {
+        LimitEvent::StorageError { error, .. } => eprintln!("rate limit storage failed: {error}"),
+        LimitEvent::UnknownTier { user_id, tier, .. } => eprintln!("unknown tier {tier} for {user_id}"),
+        LimitEvent::CostExceedsLimit { cost, limit, .. } => eprintln!("cost {cost} > limit {limit}"),
+        _ => {}
     });
 ```
+
+A request whose cost is above its tier's limit can never succeed, so it is
+answered with `403 Forbidden` and no `Retry-After`, without touching storage.
 
 ## Optional Features
 
@@ -178,6 +187,21 @@ let tier = RateTier::builder()
     .on_missing(OnMissing::UseDefault)           // Use default tier
     // .on_missing(OnMissing::Allow)              // No rate limiting
     // .on_missing(OnMissing::Deny(StatusCode::FORBIDDEN)) // Block
+    .build();
+```
+
+## Handling Unknown Tiers
+
+If the identifier returns a tier that is not configured (a typo, a plan the
+limiter does not know yet, or a value a client can influence), the request is
+**not** let through unlimited. By default it gets the default tier's quota in
+the user's own bucket, or `403 Forbidden` when no default tier is set:
+
+```rust
+let tier = RateTier::builder()
+    .on_unknown_tier(OnUnknownTier::UseDefault)              // Default tier's quota (default)
+    // .on_unknown_tier(OnUnknownTier::Deny(StatusCode::FORBIDDEN)) // Block
+    // .on_unknown_tier(OnUnknownTier::Allow)                  // No rate limiting (opt-in)
     .build();
 ```
 
