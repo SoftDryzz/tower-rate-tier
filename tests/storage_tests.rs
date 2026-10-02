@@ -218,7 +218,7 @@ async fn retain_active_preserves_active() {
     assert_eq!(storage.len(), 1);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn gc_cleans_expired_entries() {
     let clock = FakeClock::new();
     clock.set(1_000_000_000);
@@ -229,36 +229,39 @@ async fn gc_cleans_expired_entries() {
     let _ = storage.check_and_update("u1", &q, 1, clock.now()).await;
     assert_eq!(storage.len(), 1);
 
-    // Spawn GC with short interval
     let _gc = GcHandle::spawn(
         storage.clone(),
         Arc::new(clock.clone()),
         Duration::from_millis(50),
     );
 
-    // Advance clock past expiry
+    // Advance the rate-limit clock past expiry, then Tokio's paused clock to
+    // the next GC tick, and let the GC task run.
     clock.advance(Duration::from_secs(10));
-
-    // Wait for GC to run
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    tokio::time::advance(Duration::from_millis(50)).await;
+    tokio::task::yield_now().await;
 
     assert_eq!(storage.len(), 0);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn gc_handle_aborts_on_drop() {
     let clock = FakeClock::new();
     let storage = Arc::new(MemoryStorage::new());
+    let _ = storage
+        .check_and_update("u1", &Quota::per_second(1), 1, clock.now())
+        .await;
 
-    {
-        let _gc = GcHandle::spawn(
-            storage.clone(),
-            Arc::new(clock.clone()),
-            Duration::from_millis(10),
-        );
-        // _gc dropped here
-    }
+    drop(GcHandle::spawn(
+        storage.clone(),
+        Arc::new(clock.clone()),
+        Duration::from_millis(10),
+    ));
 
-    // If the task wasn't aborted, this would panic or misbehave
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // The entry expires, but an aborted GC task must never collect it.
+    clock.advance(Duration::from_secs(10));
+    tokio::time::advance(Duration::from_millis(100)).await;
+    tokio::task::yield_now().await;
+
+    assert_eq!(storage.len(), 1);
 }

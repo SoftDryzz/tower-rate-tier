@@ -172,14 +172,15 @@ mod tests {
     fn system_clock_monotonic() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_time()
+            .start_paused(true)
             .build()
             .unwrap();
         rt.block_on(async {
             let clock = SystemClock::new();
             let t0 = clock.now();
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::advance(Duration::from_millis(10)).await;
             let t1 = clock.now();
-            assert!(t1 > t0);
+            assert_eq!(t1 - t0, 10_000_000);
         });
     }
 }
