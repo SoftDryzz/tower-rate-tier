@@ -9,6 +9,8 @@
 
 Every SaaS API needs rate limiting by user plan (free/pro/enterprise). `tower-rate-tier` eliminates the 200-400 lines of custom middleware you'd otherwise write.
 
+**Walkthrough (in Spanish):** [Limitar una API por plan en Rust: GCRA, Redis y tower-rate-tier](https://softdryzz.com/blog/posts/tower-rate-tier-limitar-por-plan) explains why GCRA instead of a fixed window, requests that cost more, limits shared across instances with Redis and the safe defaults, with an example service and real output.
+
 ## Features
 
 - **Named tiers** — Define `free`, `pro`, `enterprise` (or any names) with distinct quotas

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- README link to a walkthrough of the crate (in Spanish): GCRA, request costs, Redis and the safe defaults
+
 ## [0.3.0] - 2026-10-02
 
 ### Added
