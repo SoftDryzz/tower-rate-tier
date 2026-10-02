@@ -7,6 +7,7 @@ use std::time::SystemTime;
 
 use http::{Response, StatusCode};
 
+use crate::cost::TierCost;
 use crate::event::LimitEvent;
 use crate::gcra::RateLimitInfo;
 use crate::identifier::TierIdentity;
@@ -94,6 +95,18 @@ pub(crate) fn resolve_quota<'a>(
         return Err(CheckOutcome::PassThrough);
     }
     Ok((tier_name, quota))
+}
+
+/// The cost of a request: an explicit [`TierCost`] extension wins, then the
+/// layer's `cost_fn`, then 1.
+pub(crate) fn request_cost(parts: &http::request::Parts, settings: &Settings) -> u32 {
+    if let Some(TierCost(cost)) = parts.extensions.get::<TierCost>() {
+        return *cost;
+    }
+    settings
+        .cost_fn
+        .as_ref()
+        .map_or(1, |cost_fn| cost_fn(parts))
 }
 
 /// Reject a request whose cost is above the tier's maximum burst.

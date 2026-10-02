@@ -24,6 +24,9 @@ pub type RateLimitedResponseFn = dyn Fn(&str, &str, &RateLimited) -> Response<St
 /// Callback invoked for every [`LimitEvent`].
 pub type OnEventFn = dyn for<'a> Fn(&LimitEvent<'a>) + Send + Sync;
 
+/// Computes the cost of a request from its method, URI, headers and extensions.
+pub type CostFn = dyn Fn(&http::request::Parts) -> u32 + Send + Sync;
+
 /// Tower layer for tier-based rate limiting.
 ///
 /// Wraps an inner service with [`TierLimitService`] to enforce per-tier rate limits.
@@ -59,6 +62,7 @@ pub(crate) struct Settings {
     pub(crate) on_limited: Option<Arc<OnLimitedFn>>,
     pub(crate) rate_limited_response: Option<Arc<RateLimitedResponseFn>>,
     pub(crate) on_event: Option<Arc<OnEventFn>>,
+    pub(crate) cost_fn: Option<Arc<CostFn>>,
 }
 
 impl fmt::Debug for Settings {
@@ -71,6 +75,7 @@ impl fmt::Debug for Settings {
                 &self.rate_limited_response.is_some(),
             )
             .field("on_event", &self.on_event.is_some())
+            .field("cost_fn", &self.cost_fn.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -108,6 +113,7 @@ impl TierLimitLayer {
                 on_limited: None,
                 rate_limited_response: None,
                 on_event: None,
+                cost_fn: None,
             },
         }
     }
@@ -189,6 +195,38 @@ impl TierLimitLayer {
         f: impl Fn(&str, &str, &RateLimited) -> Response<String> + Send + Sync + 'static,
     ) -> Self {
         self.settings.rate_limited_response = Some(Arc::new(f));
+        self
+    }
+
+    /// Compute the cost of each request inside the middleware.
+    ///
+    /// The closure receives the request's method, URI, headers and
+    /// extensions. A [`TierCost`](crate::TierCost) already in the extensions,
+    /// from a [`tier_cost`](crate::tier_cost) layer wrapped *around* this one,
+    /// takes precedence. Without either, a request costs 1.
+    ///
+    /// Use this instead of per-route `tier_cost` layers when the rate limiter
+    /// is added with axum's `Router::layer`: route layers run *inside* it, too
+    /// late to set the cost. Axum's `MatchedPath` extension is available here,
+    /// so routes with parameters can be matched by their pattern.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use tower_rate_tier::{RateTier, Quota, TierLimitLayer};
+    /// # let rate_tier = RateTier::builder().tier("free", Quota::per_hour(100)).build();
+    /// let layer = TierLimitLayer::new(rate_tier).cost_fn(|req| match req.uri.path() {
+    ///     "/api/search" => 5,
+    ///     "/api/export" => 20,
+    ///     "/health" => 0,
+    ///     _ => 1,
+    /// });
+    /// ```
+    pub fn cost_fn(
+        mut self,
+        f: impl Fn(&http::request::Parts) -> u32 + Send + Sync + 'static,
+    ) -> Self {
+        self.settings.cost_fn = Some(Arc::new(f));
         self
     }
 

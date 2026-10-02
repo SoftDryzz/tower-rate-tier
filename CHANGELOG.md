@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Added
 
 - `Debug` implementations for all public types (`MemoryStorage` shows only its entry count, never user keys)
+- `TierLimitLayer::cost_fn()` computes each request's cost inside the middleware from its method, URI, headers and extensions (including axum's `MatchedPath`)
 - `TierLimitLayer::on_event()` callback and `LimitEvent` enum, starting with `LimitEvent::StorageError`, so storage failures are visible even when the request fails open
 - `OnUnknownTier` policy (`RateTierBuilder::on_unknown_tier()`) and `LimitEvent::UnknownTier` for tiers that are not configured
 - `CheckError::CostExceedsLimit` and `LimitEvent::CostExceedsLimit` for requests that cost more than the tier's maximum burst
@@ -27,6 +28,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- The README and the `axum_basic` example set per-route costs with a route's own `.layer(tier_cost(n))` under a limiter added with `Router::layer`. That layer runs after the limiter, so the cost was silently ignored and every request cost 1. They now use `cost_fn`, and the `tier_cost` docs explain the order it needs
 - A request costing more than the tier's maximum burst was answered with 429 and a `Retry-After` that never helped. It is now rejected without touching storage: the middleware answers 403 Forbidden with no `Retry-After`, and `RateTier::check()` returns `CheckError::CostExceedsLimit`
 - A user in one tier could share a bucket with another user in another tier when the names contained `:` (user `a:b` in tier `c` and user `a` in tier `b:c` were both stored as `a:b:c`)
 - `X-RateLimit-Reset` on a 429 counted the rejected request, so it reported the reset one emission interval (times the request cost) too late

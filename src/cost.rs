@@ -17,18 +17,32 @@ pub struct TierCost(pub u32);
 /// health checks, metrics endpoints, or OPTIONS preflight requests. The user
 /// is still identified and tracked, but no tokens are deducted.
 ///
-/// If no `tier_cost` layer is applied, the default cost is `1`.
+/// If no `tier_cost` layer is applied, the cost comes from
+/// [`TierLimitLayer::cost_fn`](crate::TierLimitLayer::cost_fn), or is `1`.
+///
+/// The cost is read when the request reaches the rate limiter, so this layer
+/// must wrap the limiter (run before it). In axum, a route's own `.layer()`
+/// runs *inside* a limiter added with `Router::layer`, so the cost would
+/// arrive too late; use `cost_fn` there, or apply both layers to the route
+/// with `tier_cost` added last.
 ///
 /// # Examples
 ///
 /// ```rust,no_run
-/// use axum::{Router, routing::{get, post}};
-/// use tower_rate_tier::tier_cost;
+/// use std::convert::Infallible;
 ///
-/// let app: Router = Router::new()
-///     .route("/health", get(|| async { "ok" }).layer(tier_cost(0)))   // free
-///     .route("/search", post(|| async { "ok" }).layer(tier_cost(5)))  // 5 tokens
-///     .route("/export", post(|| async { "ok" }).layer(tier_cost(20))); // 20 tokens
+/// use axum::{Router, routing::post};
+/// use tower_rate_tier::{tier_cost, Quota, RateTier, TierLimitLayer};
+///
+/// let limiter = TierLimitLayer::new(RateTier::builder().tier("free", Quota::per_hour(100)).build());
+///
+/// // On a method router the last `.layer()` runs first: tier_cost, then the limiter.
+/// let app: Router = Router::new().route(
+///     "/export",
+///     post(|| async { "ok" })
+///         .layer::<_, Infallible>(limiter)
+///         .layer::<_, Infallible>(tier_cost(20)), // 20 tokens
+/// );
 /// ```
 pub fn tier_cost(cost: u32) -> TierCostLayer {
     TierCostLayer(cost)

@@ -59,17 +59,32 @@ let layer = TierLimitLayer::new(tier)
 
 ### Apply to Routes
 
+Give expensive endpoints a higher cost with `cost_fn`. It runs inside the
+middleware, so it works when the limiter is added with `Router::layer`:
+
 ```rust
-use axum::{Router, routing::{get, post}};
-use tower_rate_tier::tier_cost;
+use axum::{Router, extract::MatchedPath, routing::{get, post}};
+
+let layer = layer.cost_fn(|req| {
+    match req.extensions.get::<MatchedPath>().map(MatchedPath::as_str) {
+        Some("/api/search") => 5,  // cost: 5
+        Some("/api/export") => 20, // cost: 20
+        Some("/health") => 0,      // free (no quota consumed)
+        _ => 1,                    // cost: 1 (default)
+    }
+});
 
 let app = Router::new()
-    .route("/api/users", get(list_users))                   // cost: 1 (default)
-    .route("/api/search", post(search).layer(tier_cost(5)))  // cost: 5
-    .route("/api/export", post(export).layer(tier_cost(20))) // cost: 20
-    .route("/health", get(health).layer(tier_cost(0)))       // free (no quota consumed)
+    .route("/api/users", get(list_users))
+    .route("/api/search", post(search))
+    .route("/api/export", post(export))
+    .route("/health", get(health))
     .layer(layer);
 ```
+
+The `tier_cost(n)` layer also sets a cost, but it must wrap the limiter. A
+route's own `.layer(tier_cost(n))` runs *inside* a limiter added with
+`Router::layer`, so its cost arrives too late and is ignored.
 
 ### Rate Limit Response
 

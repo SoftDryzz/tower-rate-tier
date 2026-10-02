@@ -25,6 +25,7 @@ redis = { version = "0.27", features = ["tokio-comp"], optional = true }
 
 [dev-dependencies]
 axum = "0.8"
+tower = { version = "0.5", features = ["util"] }
 tokio = { version = "1", features = ["full", "test-util"] }
 hyper = "1"
 serde = { version = "1", features = ["derive"] }

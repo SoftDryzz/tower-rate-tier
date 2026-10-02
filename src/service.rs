@@ -8,7 +8,6 @@ use http::{Request, Response};
 use tower_service::Service;
 
 use crate::check::{self, CheckOutcome};
-use crate::cost::TierCost;
 use crate::layer::Settings;
 use crate::response;
 use crate::storage::StorageKey;
@@ -67,7 +66,9 @@ where
                 Err(CheckOutcome::Allow(_)) => unreachable!(),
             };
 
-            let cost = req.extensions().get::<TierCost>().map(|c| c.0).unwrap_or(1);
+            let (parts, body) = req.into_parts();
+            let cost = check::request_cost(&parts, &settings);
+            let req = Request::from_parts(parts, body);
             if let Some(resp) =
                 check::reject_cost_over_limit(cost, quota, &user_id, &tier_name, &settings)
             {
