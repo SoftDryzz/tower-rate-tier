@@ -157,6 +157,18 @@ fn stale_tat_resets_to_now() {
 }
 
 #[test]
+fn huge_cost_is_denied_instead_of_overflowing() {
+    // emission_interval * cost saturates to u64::MAX; adding it to `now`
+    // used to overflow (panic in debug, wrap-around and allow in release).
+    let q = Quota::per_day(1);
+    let (ei, bo) = quota_params(&q);
+    let now = 1_000_000_000;
+
+    let result = check_gcra(None, now, ei, bo, 300_000);
+    assert!(result.is_err(), "a cost far above the quota must be denied");
+}
+
+#[test]
 fn cost_zero_allowed_without_consuming() {
     let q = Quota::per_second(5);
     let (ei, bo) = quota_params(&q);

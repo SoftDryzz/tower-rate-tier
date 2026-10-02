@@ -49,7 +49,7 @@ pub fn check_gcra(
     let limit = (burst_offset / emission_interval) as u32;
     let tat = tat.unwrap_or(now);
     let increment = emission_interval.saturating_mul(cost as Nanos);
-    let new_tat = tat.max(now) + increment;
+    let new_tat = tat.max(now).saturating_add(increment);
     let allow_at = new_tat.saturating_sub(burst_offset);
 
     if allow_at > now {

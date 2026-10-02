@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Fixed
 
 - `MemoryStorage` let concurrent requests for the same key exceed the quota, because the check and the update were not atomic
+- GCRA overflow with very large costs: it panicked in debug builds, and in release builds it allowed the request and reset the user's state
 - docs.rs now builds with all features, so `buffered-body` items are documented
 - `TierLimitLayer` docs and example were attached to the `OnLimitedFn` alias
 - `identify_with_body` docs referenced a nonexistent `buffer_body(true)` signature
