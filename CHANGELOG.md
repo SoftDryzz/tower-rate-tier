@@ -10,7 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - `CircuitBreaker` storage wrapper: keeps rate limiting with a local `MemoryStorage` while the primary storage (e.g. Redis) fails, and stops calling it for `open_for` (5 s by default) after `failure_threshold` (3) consecutive failures, probing with a single request before going back. `on_state_change` reports `BreakerEvent`s (`PrimaryFailed`, `Opened`, `Closed`)
 - `MemoryStorage::clear()`
-- `axum_redis_fallback` example, checked in CI by stopping and restarting Redis while it runs
+- `axum_redis_fallback` example: a lazy Redis connection so it also starts during an outage, and a startup check that stops on a wrong password or ACL. CI stops and restarts Redis while it runs, starts it during an outage and checks the wrong-password stop
 - README link to a walkthrough of the crate (in Spanish): GCRA, request costs, Redis and the safe defaults
 
 ## [0.3.0] - 2026-10-02
