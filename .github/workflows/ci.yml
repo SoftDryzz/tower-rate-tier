@@ -78,8 +78,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      # Separate binaries run one after another, so SCRIPT FLUSH cannot race
-      # with the other tests.
+      # Separate binaries run one after another under `cargo test` (not under
+      # cargo-nextest), so SCRIPT FLUSH cannot race with the other tests.
       - run: cargo test --features redis --test redis_tests --test redis_script_flush
 
   # Runs examples/axum_api_key.rs end to end against the Redis service.
@@ -181,6 +181,7 @@ jobs:
         run: |
           set -euo pipefail
           pkill -f examples/axum_redis_fallback || true
+          while pgrep -f examples/axum_redis_fallback > /dev/null; do sleep 0.2; done
           docker stop ${{ job.services.redis.id }}
           target/debug/examples/axum_redis_fallback > restart.log 2>&1 &
           trap 'echo "--- restart.log ---"; cat restart.log' EXIT
@@ -203,6 +204,21 @@ jobs:
             sleep 1
           done
           grep -q 'redis back' restart.log
+      # A wrong password is not an outage: the example must refuse to start.
+      - name: Stop on a wrong password
+        run: |
+          set -euo pipefail
+          pkill -f examples/axum_redis_fallback || true
+          while pgrep -f examples/axum_redis_fallback > /dev/null; do sleep 0.2; done
+          code=0
+          REDIS_URL=redis://:not-the-password@127.0.0.1:6379 timeout 20 target/debug/examples/axum_redis_fallback > wrong-password.log 2>&1 || code=$?
+          echo "--- wrong-password.log (exit $code) ---"
+          cat wrong-password.log
+          # It must exit on its own (124 would mean it hung), with an error.
+          test "$code" -ne 0
+          test "$code" -ne 124
+          if grep -q 'Listening' wrong-password.log; then echo "started with a wrong password"; exit 1; fi
+          grep -qiE 'auth|password' wrong-password.log
 
   fmt:
     runs-on: ubuntu-latest

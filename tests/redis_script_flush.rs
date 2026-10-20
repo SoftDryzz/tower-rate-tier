@@ -1,9 +1,10 @@
 #![cfg(feature = "redis")]
 //! `SCRIPT FLUSH` against a real Redis, in its own test binary.
 //!
-//! Flushing empties the script cache of the whole server. Cargo runs test
-//! binaries one after another, so here it cannot race with the tests in
+//! Flushing empties the script cache of the whole server. `cargo test` runs
+//! test binaries one after another, so here it cannot race with the tests in
 //! `redis_tests.rs`, whose retry after `NOSCRIPT` could be flushed again.
+//! (cargo-nextest runs binaries in parallel and would bring the race back.)
 
 mod support;
 
