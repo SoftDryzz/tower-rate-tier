@@ -156,8 +156,19 @@ impl<P: Storage> Storage for CircuitBreaker<P> {
         let Some(route) = self.admit(now) else {
             return self.fallback.check_and_update(key, quota, cost, now);
         };
+        // Created before the future, so dropping the future even unpolled
+        // releases the probe.
+        let probe_guard = ProbeGuard {
+            state: &self.state,
+            admitted_at: now,
+            armed: route == Route::Probe,
+        };
 
         Box::pin(async move {
+            // Binding the whole guard moves it into the future; a bare
+            // `probe_guard.armed` would capture only the bool and drop the
+            // guard as soon as this function returns.
+            let mut probe_guard = probe_guard;
             if route == Route::Probe {
                 self.fallback.retain_active(now);
             }
@@ -173,6 +184,7 @@ impl<P: Storage> Storage for CircuitBreaker<P> {
                 *state = after_call(old, route, outcome, now, &self.policy);
                 (old, *state)
             };
+            probe_guard.armed = false;
 
             match result {
                 Ok(decision) => {
@@ -208,6 +220,32 @@ impl<P: fmt::Debug> fmt::Debug for CircuitBreaker<P> {
     }
 }
 
+/// Releases a probe whose future was dropped before it finished (the client
+/// went away, or a timeout cancelled it).
+///
+/// The breaker goes back to open with an `until` that has already passed, so
+/// the next request probes again. Without this it would stay half-open, and
+/// every request would use the fallback forever.
+struct ProbeGuard<'a> {
+    state: &'a Mutex<State>,
+    admitted_at: Nanos,
+    armed: bool,
+}
+
+impl Drop for ProbeGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if *state == State::HalfOpen {
+            *state = State::Open {
+                until: self.admitted_at,
+            };
+        }
+    }
+}
+
 /// Converts `duration` to nanoseconds, saturating at `u64::MAX` (~584 years).
 fn duration_nanos(duration: Duration) -> Nanos {
     Nanos::try_from(duration.as_nanos()).unwrap_or(Nanos::MAX)
@@ -217,8 +255,10 @@ fn duration_nanos(duration: Duration) -> Nanos {
 mod tests {
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, OnceLock, Weak};
     use std::time::Duration;
+
+    use tokio::sync::Semaphore;
 
     use super::*;
     use crate::gcra::{RateLimitInfo, RateLimited};
@@ -234,6 +274,12 @@ mod tests {
         Allow,
         Limit,
         Fail(&'static str),
+        /// Waits for [`Scripted::release`], then allows.
+        HeldAllow,
+        /// Waits for [`Scripted::release`], then fails.
+        HeldFail(&'static str),
+        /// Never answers, like a call stuck on a dead connection.
+        Never,
     }
 
     /// A primary storage that answers from a script and counts its calls.
@@ -242,6 +288,7 @@ mod tests {
         calls: AtomicUsize,
         script: Mutex<VecDeque<Step>>,
         then: Step,
+        gate: Arc<Semaphore>,
     }
 
     impl Scripted {
@@ -251,11 +298,17 @@ mod tests {
                 calls: AtomicUsize::new(0),
                 script: Mutex::new(steps.iter().copied().collect()),
                 then,
+                gate: Arc::new(Semaphore::new(0)),
             }
         }
 
         fn calls(&self) -> usize {
             self.calls.load(Ordering::SeqCst)
+        }
+
+        /// Lets `n` held calls answer.
+        fn release(&self, n: usize) {
+            self.gate.add_permits(n);
         }
     }
 
@@ -267,23 +320,49 @@ mod tests {
             _cost: u32,
             _now: Nanos,
         ) -> StorageFuture<'a> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
+            // Take the step before counting the call, so a test that waits
+            // for `calls() == n` knows the first n steps are already taken.
             let step = self.script.lock().unwrap().pop_front().unwrap_or(self.then);
-            let result = match step {
-                Step::Allow => Ok(Ok(RateLimitInfo {
-                    limit: 3,
-                    remaining: 2,
-                    reset_after: Duration::from_secs(20),
-                })),
-                Step::Limit => Ok(Err(RateLimited {
-                    limit: 3,
-                    retry_after: Duration::from_secs(20),
-                    reset_after: Duration::from_secs(60),
-                })),
-                Step::Fail(message) => Err(StorageError(Box::from(message))),
-            };
-            Box::pin(std::future::ready(result))
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let gate = Arc::clone(&self.gate);
+            Box::pin(async move {
+                let step = match step {
+                    Step::HeldAllow | Step::HeldFail(_) => {
+                        gate.acquire().await.unwrap().forget();
+                        match step {
+                            Step::HeldFail(message) => Step::Fail(message),
+                            _ => Step::Allow,
+                        }
+                    }
+                    Step::Never => std::future::pending().await,
+                    other => other,
+                };
+                match step {
+                    Step::Fail(message) => Err(StorageError(Box::from(message))),
+                    Step::Limit => Ok(Err(RateLimited {
+                        limit: 3,
+                        retry_after: Duration::from_secs(20),
+                        reset_after: Duration::from_secs(60),
+                    })),
+                    _ => Ok(Ok(RateLimitInfo {
+                        limit: 3,
+                        remaining: 2,
+                        reset_after: Duration::from_secs(20),
+                    })),
+                }
+            })
         }
+    }
+
+    /// Yields until `condition` holds, failing the test after 5 seconds.
+    async fn wait_until(condition: impl Fn() -> bool) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !condition() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("condition not reached within 5 s");
     }
 
     type Decision = Result<Result<RateLimitInfo, RateLimited>, StorageError>;
@@ -503,5 +582,185 @@ mod tests {
         assert!(out.contains("CircuitBreaker"), "{out}");
         assert!(out.contains("Closed"), "{out}");
         assert!(!out.contains("u1"), "{out}");
+    }
+
+    /// Opens a breaker whose primary failed 3 times at t=0.
+    async fn opened(steps_after_open: &[Step], then: Step) -> Arc<CircuitBreaker<Scripted>> {
+        let mut steps = failing(3);
+        steps.extend_from_slice(steps_after_open);
+        let breaker = Arc::new(CircuitBreaker::new(
+            Scripted::new(&steps, then),
+            MemoryStorage::new(),
+        ));
+        for _ in 0..3 {
+            serve(&breaker, 0).await;
+        }
+        breaker
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn only_one_probe_with_concurrent_requests() {
+        let breaker = opened(&[Step::HeldAllow], Step::Allow).await;
+
+        let handles: Vec<_> = (0..50)
+            .map(|_| {
+                let breaker = Arc::clone(&breaker);
+                tokio::spawn(async move { call(&breaker, 5 * S).await })
+            })
+            .collect();
+        wait_until(|| handles.iter().filter(|h| h.is_finished()).count() == 49).await;
+
+        // The 49 others were answered by the fallback while the probe waits.
+        assert_eq!(breaker.primary.calls(), 4);
+        breaker.primary.release(1);
+        for handle in handles {
+            assert!(handle.await.unwrap().is_ok());
+        }
+        assert_eq!(breaker.primary.calls(), 4);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stale_success_does_not_close() {
+        let breaker = Arc::new(CircuitBreaker::new(
+            Scripted::new(&[Step::HeldAllow], Step::Fail("redis down")),
+            MemoryStorage::new(),
+        ));
+        let slow = {
+            let breaker = Arc::clone(&breaker);
+            tokio::spawn(async move { call(&breaker, 0).await })
+        };
+        wait_until(|| breaker.primary.calls() == 1).await;
+        for _ in 0..3 {
+            serve(&breaker, 0).await;
+        }
+
+        breaker.primary.release(1);
+        assert!(slow.await.unwrap().is_ok());
+
+        // Still open: the late success came from a call admitted before.
+        serve(&breaker, 1).await;
+        assert_eq!(breaker.primary.calls(), 4);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn in_flight_failures_emit_one_opened() {
+        let (events, callback) = recorder();
+        let breaker = Arc::new(
+            CircuitBreaker::new(
+                Scripted::new(&[Step::HeldFail("in flight"); 10], Step::Allow),
+                MemoryStorage::new(),
+            )
+            .on_state_change(callback),
+        );
+        let handles: Vec<_> = (0..10)
+            .map(|_| {
+                let breaker = Arc::clone(&breaker);
+                tokio::spawn(async move { call(&breaker, 0).await })
+            })
+            .collect();
+        wait_until(|| breaker.primary.calls() == 10).await;
+
+        breaker.primary.release(10);
+        for handle in handles {
+            assert!(handle.await.unwrap().is_ok());
+        }
+
+        let events = events.lock().unwrap().clone();
+        let count = |name: &str| events.iter().filter(|e| e.starts_with(name)).count();
+        assert_eq!(count("PrimaryFailed"), 10, "{events:?}");
+        assert_eq!(count("Opened"), 1, "{events:?}");
+        // The late failures did not move the probe time.
+        serve(&breaker, 5 * S - 1).await;
+        assert_eq!(breaker.primary.calls(), 10);
+        serve(&breaker, 5 * S).await;
+        assert_eq!(breaker.primary.calls(), 11);
+    }
+
+    #[tokio::test]
+    async fn cancelled_probe_lets_the_next_request_probe() {
+        let breaker = opened(&[Step::Never], Step::Allow).await;
+
+        let cancelled = tokio::time::timeout(Duration::from_millis(1), call(&breaker, 5 * S)).await;
+        assert!(cancelled.is_err(), "the probe should still be waiting");
+        assert_eq!(breaker.primary.calls(), 4);
+
+        serve(&breaker, 5 * S).await;
+        assert_eq!(breaker.primary.calls(), 5);
+    }
+
+    #[tokio::test]
+    async fn unpolled_probe_lets_the_next_request_probe() {
+        let breaker = opened(&[], Step::Allow).await;
+        let quota = quota();
+
+        let probe = breaker.check_and_update(StorageKey::new("u1", "free"), &quota, 1, 5 * S);
+        drop(probe);
+        assert_eq!(breaker.primary.calls(), 3);
+
+        serve(&breaker, 5 * S).await;
+        assert_eq!(breaker.primary.calls(), 4);
+    }
+
+    #[tokio::test]
+    async fn callback_runs_without_the_lock() {
+        let cell: Arc<OnceLock<Weak<CircuitBreaker<Scripted>>>> = Arc::new(OnceLock::new());
+        let lock_free = Arc::new(Mutex::new(Vec::new()));
+        let callback = {
+            let cell = Arc::clone(&cell);
+            let lock_free = Arc::clone(&lock_free);
+            move |_: &BreakerEvent<'_>| {
+                let breaker = cell.get().and_then(Weak::upgrade).unwrap();
+                let free = breaker.state.try_lock().is_ok();
+                lock_free.lock().unwrap().push(free);
+            }
+        };
+        let breaker = Arc::new(
+            CircuitBreaker::new(
+                Scripted::new(&failing(3), Step::Allow),
+                MemoryStorage::new(),
+            )
+            .on_state_change(callback),
+        );
+        cell.set(Arc::downgrade(&breaker)).unwrap();
+
+        for _ in 0..3 {
+            serve(&breaker, 0).await;
+        }
+        serve(&breaker, 5 * S).await;
+
+        // PrimaryFailed x3, Opened, Closed: the lock was free every time.
+        assert_eq!(*lock_free.lock().unwrap(), [true; 5]);
+    }
+
+    #[tokio::test]
+    async fn fallback_is_pruned_at_each_probe() {
+        let quota = Quota::per_second(10);
+        let breaker = CircuitBreaker::new(
+            Scripted::new(&failing(4), Step::Allow),
+            MemoryStorage::new(),
+        );
+        let check = |user: String, now: Nanos| {
+            let breaker = &breaker;
+            async move {
+                breaker
+                    .check_and_update(StorageKey::new(&user, "free"), &quota, 1, now)
+                    .await
+                    .unwrap()
+            }
+        };
+        for _ in 0..3 {
+            let _ = check("u1".to_owned(), 0).await;
+        }
+        for i in 0..100 {
+            let _ = check(format!("user{i}"), 1).await;
+        }
+        assert_eq!(breaker.fallback.len(), 101);
+
+        // Every entry expired 100 ms after its request; the failed probe
+        // prunes them and then stores only its own.
+        let _ = check("u1".to_owned(), 5 * S).await;
+
+        assert_eq!(breaker.primary.calls(), 4);
+        assert_eq!(breaker.fallback.len(), 1);
     }
 }
