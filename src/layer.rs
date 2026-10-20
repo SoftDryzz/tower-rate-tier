@@ -237,6 +237,12 @@ impl TierLimitLayer {
     /// problems that the policies otherwise handle quietly, for example a
     /// fail-open [`OnStorageError::Allow`] while the backend is down.
     ///
+    /// Behind a [`CircuitBreaker`](crate::CircuitBreaker), backend failures
+    /// are answered by its fallback and never reach this callback; they are
+    /// reported by
+    /// [`CircuitBreaker::on_state_change`](crate::CircuitBreaker::on_state_change)
+    /// instead.
+    ///
     /// # Examples
     ///
     /// ```rust,no_run

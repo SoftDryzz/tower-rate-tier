@@ -21,13 +21,78 @@ const DEFAULT_OPEN_FOR: Duration = Duration::from_secs(5);
 type Callback = Box<dyn Fn(&BreakerEvent<'_>) + Send + Sync>;
 
 /// A [`Storage`] that keeps rate limiting with a local [`MemoryStorage`]
-/// while its primary storage (usually Redis) fails.
+/// while its primary storage (usually `RedisStorage`) fails.
 ///
-/// A call that fails on the primary is answered by the fallback. After
-/// `failure_threshold` consecutive failures the breaker opens: requests go
-/// straight to the fallback, without waiting for the primary, for
-/// `open_for`. Then one request probes the primary; if it answers, requests
-/// go back to it and the fallback is emptied.
+/// # How it behaves
+///
+/// - **Closed**, the primary is healthy: every request goes to the primary.
+///   A request whose call fails is answered by the fallback instead, so it is
+///   still limited and never fails because of the outage.
+/// - **Open**: after [`failure_threshold`](Self::failure_threshold)
+///   consecutive failures (3 by default), requests go straight to the
+///   fallback for [`open_for`](Self::open_for) (5 seconds by default),
+///   without waiting for the primary's timeout.
+/// - **Probe**: the first request after `open_for` tries the primary. Only
+///   one probe runs at a time; other requests keep using the fallback. If
+///   the probe succeeds, requests go back to the primary and the fallback is
+///   emptied. If it fails, it is answered by the fallback and the breaker
+///   stays open for another `open_for`.
+///
+/// Only storage errors count as failures: a primary that answers "limited"
+/// is healthy.
+///
+/// # During an outage
+///
+/// - Each instance applies each tier's full quota from its own memory, so
+///   with N instances a user can make up to N times their quota while the
+///   primary is down. When it comes back, users continue from the state the
+///   primary kept and the local counts are discarded.
+/// - Failures are reported through
+///   [`on_state_change`](Self::on_state_change). The middleware never sees a
+///   storage error, so [`OnStorageError`](crate::OnStorageError) and
+///   [`LimitEvent::StorageError`](crate::LimitEvent::StorageError) stay quiet.
+/// - The breaker has no timeout of its own. `RedisStorage` gives up after
+///   100 ms by default; a custom primary must bound its own latency.
+/// - Only the limiter's storage is covered. An identifier that reads the tier
+///   from Redis needs its own plan for an outage, such as a local cache.
+/// - The breaker keeps one state for the whole primary. With Redis Cluster,
+///   one failed master can open it for every key, and a probe that reaches a
+///   healthy master closes it again, so it may switch back and forth until
+///   the cluster recovers. Requests stay limited throughout.
+/// - Don't take an instance out of a load balancer because the breaker is
+///   open: the fallback keeps it serving, and probes need requests to run.
+///
+/// # Example
+///
+/// ```
+/// # #[cfg(feature = "redis")]
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// use std::sync::Arc;
+/// use std::time::Duration;
+///
+/// use tower_rate_tier::storage::memory::MemoryStorage;
+/// use tower_rate_tier::{BreakerEvent, CircuitBreaker, Quota, RateTier, RedisStorage};
+///
+/// let conn = redis::Client::open("redis://127.0.0.1:6379")?
+///     .get_connection_manager()
+///     .await?;
+///
+/// let storage = CircuitBreaker::new(RedisStorage::new(conn), MemoryStorage::new())
+///     .failure_threshold(3)
+///     .open_for(Duration::from_secs(5))
+///     .on_state_change(|event| match event {
+///         BreakerEvent::Opened { error, .. } => eprintln!("redis down: {error}"),
+///         BreakerEvent::Closed { .. } => eprintln!("redis back"),
+///         _ => {}
+///     });
+///
+/// let tiers = RateTier::builder()
+///     .tier("free", Quota::per_hour(100))
+///     .storage(Arc::new(storage))
+///     .build();
+/// # Ok(())
+/// # }
+/// ```
 pub struct CircuitBreaker<P> {
     primary: P,
     fallback: MemoryStorage,
