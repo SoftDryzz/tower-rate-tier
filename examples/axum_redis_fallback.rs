@@ -7,8 +7,11 @@
 //! - Tiers come from a map in the code, so identifying a request never
 //!   needs Redis.
 //!
+//! - The Redis connection is lazy, so the service also starts while Redis
+//!   is down.
+//!
 //! Run with: `cargo run --example axum_redis_fallback --features redis`
-//! (a Redis reachable at `REDIS_URL`, default `redis://127.0.0.1:6379`).
+//! (Redis at `REDIS_URL`, default `redis://127.0.0.1:6379`).
 //!
 //! Test, then stop Redis and test again: the limit still applies.
 //!   curl -i -H "x-api-key: key_free" http://localhost:3000/api/data
@@ -19,6 +22,7 @@ use std::sync::Arc;
 use axum::routing::get;
 use axum::Router;
 use http::StatusCode;
+use redis::aio::ConnectionManagerConfig;
 use tower_rate_tier::storage::memory::MemoryStorage;
 use tower_rate_tier::{
     BreakerEvent, CircuitBreaker, OnMissing, Quota, RateTier, RedisStorage, TierIdentity,
@@ -38,7 +42,10 @@ fn tier_of(api_key: &str) -> Option<&'static str> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
-    let conn = redis::Client::open(url)?.get_connection_manager().await?;
+    // Lazy: connects on the first command instead of waiting here, so a
+    // restart during an outage still serves requests (from the fallback).
+    let conn =
+        redis::Client::open(url)?.get_connection_manager_lazy(ConnectionManagerConfig::new())?;
 
     let storage = CircuitBreaker::new(RedisStorage::new(conn), MemoryStorage::new())
         .on_state_change(|event| match event {

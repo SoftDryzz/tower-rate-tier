@@ -191,8 +191,14 @@ limiting instead:
 
 ```rust
 use std::sync::Arc;
+use redis::aio::ConnectionManagerConfig;
 use tower_rate_tier::storage::memory::MemoryStorage;
 use tower_rate_tier::{BreakerEvent, CircuitBreaker, Quota, RateTier, RedisStorage};
+
+// Lazy (redis 1.2+): connects on the first command, so an instance that
+// starts during an outage still serves requests from the fallback.
+let conn = redis::Client::open("redis://127.0.0.1:6379")?
+    .get_connection_manager_lazy(ConnectionManagerConfig::new())?;
 
 let storage = CircuitBreaker::new(RedisStorage::new(conn), MemoryStorage::new())
     .on_state_change(|event| match event {
@@ -215,6 +221,8 @@ let tier = RateTier::builder()
   requests go back to Redis and the local counts are discarded.
 - Each instance applies the full quota from its own memory, so with N
   instances a user can make up to N times their quota while Redis is down.
+- Create the connection lazily, as above: `get_connection_manager()` waits
+  for Redis, so an instance restarted during the outage would not start.
 - Outages are reported by `on_state_change`, not `on_event`: the middleware
   never sees the storage error.
 - Only the limiter's storage is covered. An identifier that reads the tier
