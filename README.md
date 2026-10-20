@@ -195,8 +195,9 @@ use redis::aio::ConnectionManagerConfig;
 use tower_rate_tier::storage::memory::MemoryStorage;
 use tower_rate_tier::{BreakerEvent, CircuitBreaker, Quota, RateTier, RedisStorage};
 
-// Lazy (redis 1.2+): connects on the first command, so an instance that
-// starts during an outage still serves requests from the fallback.
+// Lazy (redis 1.2+, inside the Tokio runtime): connects on the first
+// command, so an instance that starts during an outage still serves
+// requests from the fallback.
 let conn = redis::Client::open("redis://127.0.0.1:6379")?
     .get_connection_manager_lazy(ConnectionManagerConfig::new())?;
 
@@ -221,8 +222,14 @@ let tier = RateTier::builder()
   requests go back to Redis and the local counts are discarded.
 - Each instance applies the full quota from its own memory, so with N
   instances a user can make up to N times their quota while Redis is down.
-- Create the connection lazily, as above: `get_connection_manager()` waits
-  for Redis, so an instance restarted during the outage would not start.
+- Create the connection lazily, as above: `get_connection_manager()` fails
+  when Redis is unreachable at startup, so an instance restarted during the
+  outage would not start. A lazy connection only reconnects after I/O
+  errors, so check it at startup and stop on anything else (a wrong
+  password or ACL), as the example does.
+- Keep Redis's timeout (100 ms by default) well below `open_for` and below
+  any timeout around the middleware: the open period counts from when the
+  failed call started, and a call cancelled from outside is not counted.
 - Outages are reported by `on_state_change`, not `on_event`: the middleware
   never sees the storage error.
 - Only the limiter's storage is covered. An identifier that reads the tier

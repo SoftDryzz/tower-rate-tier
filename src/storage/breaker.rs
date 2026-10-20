@@ -53,10 +53,20 @@ type Callback = Box<dyn Fn(&BreakerEvent<'_>) + Send + Sync>;
 ///   storage error, so [`OnStorageError`](crate::OnStorageError) and
 ///   [`LimitEvent::StorageError`](crate::LimitEvent::StorageError) stay quiet.
 /// - The breaker has no timeout of its own. `RedisStorage` gives up after
-///   100 ms by default; a custom primary must bound its own latency.
+///   100 ms by default; a custom primary must bound its own latency. Keep
+///   that timeout well below `open_for`, because the open period counts
+///   from when the failed call started, and below any timeout around the
+///   middleware, because a call cancelled from outside is not counted as a
+///   failure.
 /// - Create the Redis connection lazily, as in the example below, so an
 ///   instance that starts during an outage can serve from the fallback:
-///   `get_connection_manager()` waits until Redis answers.
+///   `get_connection_manager()` fails when Redis is unreachable at startup.
+///   The lazy constructor must be called inside the Tokio runtime.
+/// - A lazy connection only reconnects after I/O errors. A wrong password or
+///   ACL makes every call fail until a restart, which looks like an outage:
+///   the breaker opens and limits locally. Check the connection at startup
+///   and stop on errors other than I/O, as `examples/axum_redis_fallback.rs`
+///   does, and alert on [`BreakerEvent::Opened`].
 /// - Only the limiter's storage is covered. An identifier that reads the tier
 ///   from Redis needs its own plan for an outage, such as a local cache.
 /// - The breaker keeps one state for the whole primary. With Redis Cluster,
@@ -78,7 +88,8 @@ type Callback = Box<dyn Fn(&BreakerEvent<'_>) + Send + Sync>;
 /// use tower_rate_tier::storage::memory::MemoryStorage;
 /// use tower_rate_tier::{BreakerEvent, CircuitBreaker, Quota, RateTier, RedisStorage};
 ///
-/// // Lazy (redis 1.2+): connects on the first command, not here.
+/// // Lazy (redis 1.2+): connects on the first command, not here. Call it
+/// // inside the Tokio runtime.
 /// let conn = redis::Client::open("redis://127.0.0.1:6379")?
 ///     .get_connection_manager_lazy(ConnectionManagerConfig::new())?;
 ///
@@ -168,6 +179,10 @@ impl<P: Storage> CircuitBreaker<P> {
 
     /// Sets how long the breaker stays open before a probe (default 5 s).
     ///
+    /// The fallback also drops its expired entries at most once per
+    /// `open_for`, so with a long `open_for` it can hold that long of
+    /// expired entries, one per user served from it.
+    ///
     /// # Panics
     ///
     /// Panics if `duration` is zero.
@@ -210,8 +225,10 @@ impl<P: Storage> CircuitBreaker<P> {
         }
     }
 
-    /// Drops the fallback's expired entries. Their buckets are full again,
-    /// so this never changes a decision; it only bounds the memory.
+    /// Drops the fallback's entries that expired before `now`. For requests
+    /// at or after `now` their buckets are full again, so nothing changes; a
+    /// slower request with an older `now` can at most regain the tokens of
+    /// that gap.
     fn prune_fallback(&self, now: Nanos) {
         self.last_pruned.store(now, Ordering::Relaxed);
         self.fallback.retain_active(now);
@@ -863,6 +880,48 @@ mod tests {
 
         assert_eq!(breaker.primary.calls(), 4);
         assert_eq!(breaker.fallback.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn finished_probe_does_not_release_a_newer_probe() {
+        // With a 1 ns open period, the PrimaryFailed callback of a failed
+        // probe can already admit the next probe. The first probe's guard
+        // must not then put the breaker back to open and let a third one in.
+        let cell: Arc<OnceLock<Weak<CircuitBreaker<Scripted>>>> = Arc::new(OnceLock::new());
+        let callback = {
+            let cell = Arc::clone(&cell);
+            move |event: &BreakerEvent<'_>| {
+                let BreakerEvent::PrimaryFailed { error, .. } = event else {
+                    return;
+                };
+                if !error.to_string().contains("probe") {
+                    return;
+                }
+                let breaker = cell.get().and_then(Weak::upgrade).unwrap();
+                let quota = quota();
+                let newer = breaker.check_and_update(StorageKey::new("u1", "free"), &quota, 1, 20);
+                // Keep the newer probe in flight: never polled, never dropped.
+                std::mem::forget(newer);
+            }
+        };
+        let breaker = Arc::new(
+            CircuitBreaker::new(
+                Scripted::new(&[Step::Fail("first"), Step::Fail("probe")], Step::Allow),
+                MemoryStorage::new(),
+            )
+            .failure_threshold(1)
+            .open_for(Duration::from_nanos(1))
+            .on_state_change(callback),
+        );
+        cell.set(Arc::downgrade(&breaker)).unwrap();
+
+        serve(&breaker, 0).await;
+        serve(&breaker, 10).await;
+        assert_eq!(*breaker.lock_state(), State::HalfOpen);
+
+        // The newer probe still owns the half-open state.
+        serve(&breaker, 30).await;
+        assert_eq!(breaker.primary.calls(), 2);
     }
 
     #[tokio::test]
