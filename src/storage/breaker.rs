@@ -764,3 +764,67 @@ mod tests {
         assert_eq!(breaker.fallback.len(), 1);
     }
 }
+
+#[cfg(all(test, feature = "redis"))]
+mod redis_tests {
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    use super::*;
+    use crate::gcra::{RateLimitInfo, RateLimited};
+    use crate::storage::redis::test_conns::{NeverAnswers, Refused};
+    use crate::storage::redis::RedisStorage;
+
+    async fn call<P: Storage>(
+        breaker: &CircuitBreaker<P>,
+        now: Nanos,
+    ) -> Result<Result<RateLimitInfo, RateLimited>, StorageError> {
+        let quota = Quota::per_minute(3);
+        breaker
+            .check_and_update(StorageKey::new("u1", "free"), &quota, 1, now)
+            .await
+    }
+
+    #[tokio::test]
+    async fn never_answering_redis_opens_and_skips_the_timeout() {
+        let redis = RedisStorage::new(NeverAnswers).timeout(Duration::from_millis(50));
+        let breaker = CircuitBreaker::new(redis, MemoryStorage::new());
+
+        for _ in 0..3 {
+            let started = Instant::now();
+            assert!(call(&breaker, 0).await.is_ok());
+            assert!(started.elapsed() >= Duration::from_millis(50));
+        }
+
+        let started = Instant::now();
+        assert!(call(&breaker, 0).await.is_ok());
+        assert!(
+            started.elapsed() < Duration::from_millis(10),
+            "an open breaker must not wait for Redis: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn refused_redis_opens_the_breaker() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        let breaker = CircuitBreaker::new(RedisStorage::new(Refused), MemoryStorage::new())
+            .on_state_change(move |event| {
+                sink.lock().unwrap().push(match event {
+                    BreakerEvent::PrimaryFailed { .. } => "PrimaryFailed",
+                    BreakerEvent::Opened { .. } => "Opened",
+                    BreakerEvent::Closed => "Closed",
+                });
+            });
+
+        for _ in 0..4 {
+            assert!(call(&breaker, 0).await.is_ok());
+        }
+
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["PrimaryFailed", "PrimaryFailed", "PrimaryFailed", "Opened"]
+        );
+    }
+}
