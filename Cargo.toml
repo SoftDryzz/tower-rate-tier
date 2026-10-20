@@ -44,6 +44,10 @@ harness = false
 name = "axum_api_key"
 required-features = ["redis"]
 
+[[example]]
+name = "axum_redis_fallback"
+required-features = ["redis"]
+
 [features]
 default = []
 redis = ["dep:redis", "dep:sha1_smol"]
