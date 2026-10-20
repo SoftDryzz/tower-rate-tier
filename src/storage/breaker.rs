@@ -53,10 +53,20 @@ type Callback = Box<dyn Fn(&BreakerEvent<'_>) + Send + Sync>;
 ///   storage error, so [`OnStorageError`](crate::OnStorageError) and
 ///   [`LimitEvent::StorageError`](crate::LimitEvent::StorageError) stay quiet.
 /// - The breaker has no timeout of its own. `RedisStorage` gives up after
-///   100 ms by default; a custom primary must bound its own latency.
+///   100 ms by default; a custom primary must bound its own latency. Keep
+///   that timeout well below `open_for`, because the open period counts
+///   from when the failed call started, and below any timeout around the
+///   middleware, because a call cancelled from outside is not counted as a
+///   failure.
 /// - Create the Redis connection lazily, as in the example below, so an
 ///   instance that starts during an outage can serve from the fallback:
-///   `get_connection_manager()` waits until Redis answers.
+///   `get_connection_manager()` fails when Redis is unreachable at startup.
+///   The lazy constructor must be called inside the Tokio runtime.
+/// - A lazy connection only reconnects after I/O errors. A wrong password or
+///   ACL makes every call fail until a restart, which looks like an outage:
+///   the breaker opens and limits locally. Check the connection at startup
+///   and stop on errors other than I/O, as `examples/axum_redis_fallback.rs`
+///   does, and alert on [`BreakerEvent::Opened`].
 /// - Only the limiter's storage is covered. An identifier that reads the tier
 ///   from Redis needs its own plan for an outage, such as a local cache.
 /// - The breaker keeps one state for the whole primary. With Redis Cluster,
@@ -78,7 +88,8 @@ type Callback = Box<dyn Fn(&BreakerEvent<'_>) + Send + Sync>;
 /// use tower_rate_tier::storage::memory::MemoryStorage;
 /// use tower_rate_tier::{BreakerEvent, CircuitBreaker, Quota, RateTier, RedisStorage};
 ///
-/// // Lazy (redis 1.2+): connects on the first command, not here.
+/// // Lazy (redis 1.2+): connects on the first command, not here. Call it
+/// // inside the Tokio runtime.
 /// let conn = redis::Client::open("redis://127.0.0.1:6379")?
 ///     .get_connection_manager_lazy(ConnectionManagerConfig::new())?;
 ///
@@ -168,6 +179,10 @@ impl<P: Storage> CircuitBreaker<P> {
 
     /// Sets how long the breaker stays open before a probe (default 5 s).
     ///
+    /// The fallback also drops its expired entries at most once per
+    /// `open_for`, so with a long `open_for` it can hold that long of
+    /// expired entries, one per user served from it.
+    ///
     /// # Panics
     ///
     /// Panics if `duration` is zero.
@@ -210,8 +225,10 @@ impl<P: Storage> CircuitBreaker<P> {
         }
     }
 
-    /// Drops the fallback's expired entries. Their buckets are full again,
-    /// so this never changes a decision; it only bounds the memory.
+    /// Drops the fallback's entries that expired before `now`. For requests
+    /// at or after `now` their buckets are full again, so nothing changes; a
+    /// slower request with an older `now` can at most regain the tokens of
+    /// that gap.
     fn prune_fallback(&self, now: Nanos) {
         self.last_pruned.store(now, Ordering::Relaxed);
         self.fallback.retain_active(now);
