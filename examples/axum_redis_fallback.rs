@@ -22,7 +22,7 @@ use std::time::Duration;
 use axum::routing::get;
 use axum::Router;
 use http::StatusCode;
-use redis::aio::{ConnectionManager, ConnectionManagerConfig};
+use redis::aio::ConnectionManagerConfig;
 use tower_rate_tier::storage::memory::MemoryStorage;
 use tower_rate_tier::{
     BreakerEvent, CircuitBreaker, OnMissing, Quota, RateTier, RedisStorage, TierIdentity,
@@ -39,12 +39,15 @@ fn tier_of(api_key: &str) -> Option<&'static str> {
     }
 }
 
-/// Stops on a wrong URL, password or ACL, which a lazy connection never
-/// recovers from, but lets the service start when Redis is only unreachable.
-async fn check_redis(conn: &ConnectionManager) -> Result<(), redis::RedisError> {
-    let mut conn = conn.clone();
-    let ping = async { redis::cmd("PING").query_async::<String>(&mut conn).await };
-    match tokio::time::timeout(Duration::from_secs(2), ping).await {
+/// Stops on a wrong password or ACL, which a lazy connection never recovers
+/// from, but lets the service start when Redis is only unreachable.
+///
+/// It uses one plain connection attempt: the `ConnectionManager` retries
+/// every connection error with backoff, so through it a wrong password would
+/// look like a slow Redis.
+async fn check_redis(client: &redis::Client) -> Result<(), redis::RedisError> {
+    let connect = client.get_multiplexed_async_connection();
+    match tokio::time::timeout(Duration::from_secs(2), connect).await {
         Ok(Err(error)) if !error.is_io_error() => Err(error),
         Ok(Err(_)) | Err(_) => {
             eprintln!("redis unreachable at startup, starting anyway");
@@ -57,11 +60,11 @@ async fn check_redis(conn: &ConnectionManager) -> Result<(), redis::RedisError> 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
+    let client = redis::Client::open(url)?;
+    check_redis(&client).await?;
     // Lazy: connects on the first command instead of waiting here, so a
     // restart during an outage still serves requests (from the fallback).
-    let conn =
-        redis::Client::open(url)?.get_connection_manager_lazy(ConnectionManagerConfig::new())?;
-    check_redis(&conn).await?;
+    let conn = client.get_connection_manager_lazy(ConnectionManagerConfig::new())?;
 
     let storage = CircuitBreaker::new(RedisStorage::new(conn), MemoryStorage::new())
         .on_state_change(|event| match event {
