@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-20
+
 ### Added
 
 - `CircuitBreaker` storage wrapper: keeps rate limiting with a local `MemoryStorage` while the primary storage (e.g. Redis) fails, and stops calling it for `open_for` (5 s by default) after `failure_threshold` (3) consecutive failures, probing with a single request before going back. `on_state_change` reports `BreakerEvent`s (`PrimaryFailed`, `Opened`, `Closed`)
@@ -133,7 +135,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - README with usage guide
 - Dual-licensed under MIT OR Apache-2.0
 
-[Unreleased]: https://github.com/SoftDryzz/tower-rate-tier/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/SoftDryzz/tower-rate-tier/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/SoftDryzz/tower-rate-tier/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/SoftDryzz/tower-rate-tier/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/SoftDryzz/tower-rate-tier/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/SoftDryzz/tower-rate-tier/compare/v0.1.0...v0.1.1
