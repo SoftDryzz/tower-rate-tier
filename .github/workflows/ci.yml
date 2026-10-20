@@ -78,7 +78,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --features redis --test redis_tests
+      # Separate binaries run one after another, so SCRIPT FLUSH cannot race
+      # with the other tests.
+      - run: cargo test --features redis --test redis_tests --test redis_script_flush
 
   # Runs examples/axum_api_key.rs end to end against the Redis service.
   example-api-key:
