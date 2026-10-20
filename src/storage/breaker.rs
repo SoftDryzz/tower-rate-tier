@@ -673,10 +673,14 @@ mod tests {
                 tokio::spawn(async move { call(&breaker, 5 * S).await })
             })
             .collect();
-        wait_until(|| handles.iter().filter(|h| h.is_finished()).count() == 49).await;
+        // Wait for the probe to reach the primary too: it can be admitted
+        // and then paused before calling it while the others finish.
+        wait_until(|| {
+            breaker.primary.calls() == 4 && handles.iter().filter(|h| h.is_finished()).count() == 49
+        })
+        .await;
 
         // The 49 others were answered by the fallback while the probe waits.
-        assert_eq!(breaker.primary.calls(), 4);
         breaker.primary.release(1);
         for handle in handles {
             assert!(handle.await.unwrap().is_ok());
@@ -833,7 +837,8 @@ mod tests {
 #[cfg(all(test, feature = "redis"))]
 mod redis_tests {
     use std::sync::{Arc, Mutex};
-    use std::time::Instant;
+
+    use tokio::time::Instant;
 
     use super::*;
     use crate::gcra::{RateLimitInfo, RateLimited};
@@ -850,7 +855,9 @@ mod redis_tests {
             .await
     }
 
-    #[tokio::test]
+    // Paused time: the timeout elapses exactly, without depending on how
+    // busy the machine is.
+    #[tokio::test(start_paused = true)]
     async fn never_answering_redis_opens_and_skips_the_timeout() {
         let redis = RedisStorage::new(NeverAnswers).timeout(Duration::from_millis(50));
         let breaker = CircuitBreaker::new(redis, MemoryStorage::new());
@@ -858,15 +865,15 @@ mod redis_tests {
         for _ in 0..3 {
             let started = Instant::now();
             assert!(call(&breaker, 0).await.is_ok());
-            assert!(started.elapsed() >= Duration::from_millis(50));
+            assert_eq!(started.elapsed(), Duration::from_millis(50));
         }
 
         let started = Instant::now();
         assert!(call(&breaker, 0).await.is_ok());
-        assert!(
-            started.elapsed() < Duration::from_millis(10),
-            "an open breaker must not wait for Redis: {:?}",
-            started.elapsed()
+        assert_eq!(
+            started.elapsed(),
+            Duration::ZERO,
+            "an open breaker must not wait for Redis"
         );
     }
 
