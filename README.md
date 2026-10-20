@@ -18,6 +18,7 @@ Every SaaS API needs rate limiting by user plan (free/pro/enterprise). `tower-ra
 - **Async identifier** — Extract `(user_id, tier)` from headers, JWT, API keys, or request body
 - **GCRA algorithm** — Smooth rate enforcement, with no burst at window boundaries
 - **Shared limits across instances** — Redis backend (feature `redis`) with an atomic GCRA script and Redis's own clock
+- **Survives Redis outages** — `CircuitBreaker` keeps limiting from local memory while Redis is down, without waiting for it on every request
 - **Pluggable storage** — In-memory (DashMap) with automatic GC, Redis, or your own via the `Storage` trait
 - **Safe defaults** — Unknown tiers and unidentified requests never bypass the limit unless you opt in
 - **Testable clock** — Deterministic time control in tests with `FakeClock`
@@ -181,6 +182,61 @@ let tier = RateTier::builder()
 See [`examples/axum_api_key.rs`](examples/axum_api_key.rs) for a complete
 service that also looks up each API key's tier in Redis.
 
+## When Redis Goes Down
+
+Without help, a Redis outage leaves two choices: let every request through
+unlimited (`OnStorageError::Allow`) or answer 503 to everyone
+(`OnStorageError::Deny`). Wrap the storage in a `CircuitBreaker` to keep
+limiting instead:
+
+```rust
+use std::sync::Arc;
+use redis::aio::ConnectionManagerConfig;
+use tower_rate_tier::storage::memory::MemoryStorage;
+use tower_rate_tier::{BreakerEvent, CircuitBreaker, Quota, RateTier, RedisStorage};
+
+// Lazy (redis 1.2+): connects on the first command, so an instance that
+// starts during an outage still serves requests from the fallback.
+let conn = redis::Client::open("redis://127.0.0.1:6379")?
+    .get_connection_manager_lazy(ConnectionManagerConfig::new())?;
+
+let storage = CircuitBreaker::new(RedisStorage::new(conn), MemoryStorage::new())
+    .on_state_change(|event| match event {
+        BreakerEvent::Opened { error, .. } => eprintln!("redis down: {error}"),
+        BreakerEvent::Closed { .. } => eprintln!("redis back"),
+        _ => {}
+    });
+
+let tier = RateTier::builder()
+    .tier("free", Quota::per_hour(100))
+    .storage(Arc::new(storage))
+    .build();
+```
+
+- A request whose Redis call fails is answered from local memory, so it is
+  still limited and never fails because of the outage.
+- After 3 failures in a row (`.failure_threshold(..)`) the breaker opens:
+  requests skip Redis for 5 seconds (`.open_for(..)`) instead of each waiting
+  for the timeout. Then a single request probes Redis; when it answers,
+  requests go back to Redis and the local counts are discarded.
+- Each instance applies the full quota from its own memory, so with N
+  instances a user can make up to N times their quota while Redis is down.
+- Create the connection lazily, as above: `get_connection_manager()` waits
+  for Redis, so an instance restarted during the outage would not start.
+- Outages are reported by `on_state_change`, not `on_event`: the middleware
+  never sees the storage error.
+- Only the limiter's storage is covered. An identifier that reads the tier
+  from Redis (like the one in `axum_api_key`) needs its own plan, such as a
+  local cache.
+- With Redis Cluster, one failed master can open the breaker for every key,
+  and it may switch back and forth until the cluster recovers. Requests stay
+  limited throughout.
+- Keep instances in the load balancer while the breaker is open: the
+  fallback keeps them serving, and probes need requests to run.
+
+See [`examples/axum_redis_fallback.rs`](examples/axum_redis_fallback.rs) for a
+service that keeps limiting while Redis is stopped and restarted.
+
 ## Custom Storage Backend
 
 Implement the `Storage` trait for any other backend. It receives a
@@ -252,6 +308,9 @@ let layer = TierLimitLayer::new(tier)
     // .on_storage_error(OnStorageError::Deny); // Fail closed (503)
 ```
 
+To keep limiting while the backend is down instead, see
+[When Redis Goes Down](#when-redis-goes-down).
+
 ## Minimum Supported Rust Version
 
 Rust 1.75 for the default features and `buffered-body`, and Rust 1.88 with
@@ -292,6 +351,18 @@ Checked against each crate's source in October 2026:
 | Injectable clock for tests | No | Paused Tokio time | Explicit `now` argument | **`FakeClock`** |
 | Frameworks | Tower layer | Axum, Tonic | Axum | **Tower layer (Axum, Hyper)** |
 | Algorithm | GCRA | Token / leaky bucket | GCRA | **GCRA** |
+
+### Among Redis-backed limiters
+
+Checked against each crate's source in October 2026:
+
+| Feature | throttle-kit 2.1 | barnacle-rs 0.5 | tower-rate-limit-redis 1.0 | tower-rate-limit-fred 2.1 | **tower-rate-tier 0.3.1** |
+|---------|------------------|-----------------|----------------------------|---------------------------|---------------------------|
+| If Redis fails | Allows every request (fixed) | 503, or allows (configurable) | 500, or allows (configurable) | 500, or allows (configurable) | **Limits locally** (`CircuitBreaker`), or 503 / allows |
+| Keeps limiting with local memory | No | No | No | No | **Yes** |
+| Stops calling Redis while it is down | No | No | No | No | **Yes** |
+| Named tiers (per-plan quotas) | No | Limits from your own callback | No | No | **Yes** |
+| Request cost/weight | No | No | No | No | **Yes** |
 
 ## License
 

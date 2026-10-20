@@ -37,6 +37,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Cargo 1.75 resolves to the newest dependencies even when they need a
+      # newer Rust (tokio 1.54 needs 1.85), so resolve with a current Cargo
+      # that prefers versions compatible with `rust-version`.
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo generate-lockfile
+        env:
+          CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.75"
@@ -113,6 +120,87 @@ jobs:
             test "$(status -X POST -H 'x-api-key: key_xyz789' http://localhost:3000/api/export)" = 200
           done
           test "$(status -X POST -H 'x-api-key: key_xyz789' http://localhost:3000/api/export)" = 429
+
+  # Runs examples/axum_redis_fallback.rs against the Redis service, stops
+  # Redis mid-run to check that requests are still limited without waiting
+  # for it, then starts it again to check that the limiter goes back to it.
+  example-redis-fallback:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      REDIS_URL: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --example axum_redis_fallback --features redis
+      - name: Limit through a Redis outage
+        run: |
+          set -euo pipefail
+          target/debug/examples/axum_redis_fallback > example.log 2>&1 &
+          trap 'echo "--- example.log ---"; cat example.log' EXIT
+          status() { curl -s -o /dev/null -w '%{http_code}' -H 'x-api-key: key_free' http://localhost:3000/api/data; }
+          for _ in $(seq 1 30); do
+            [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/api/data || true)" != "000" ] && break
+            sleep 1
+          done
+          # free allows 5 per minute; Redis keeps the count.
+          for _ in 1 2 3 4 5; do test "$(status)" = 200; done
+          test "$(status)" = 429
+          docker stop ${{ job.services.redis.id }}
+          # The local fallback starts with the full quota and enforces it.
+          for _ in 1 2 3 4 5; do test "$(status)" = 200; done
+          test "$(status)" = 429
+          grep -q 'redis down' example.log
+          # The breaker is open, so a request does not wait for Redis.
+          elapsed=$(curl -s -o /dev/null -w '%{time_total}' -H 'x-api-key: key_free' http://localhost:3000/api/data)
+          awk -v t="$elapsed" 'BEGIN { exit !(t < 0.08) }'
+          docker start ${{ job.services.redis.id }}
+          for _ in $(seq 1 30); do
+            docker exec ${{ job.services.redis.id }} redis-cli ping 2>/dev/null | grep -q PONG && break
+            sleep 1
+          done
+          for _ in $(seq 1 30); do
+            status > /dev/null
+            grep -q 'redis back' example.log && break
+            sleep 1
+          done
+          grep -q 'redis back' example.log
+      # An instance restarted during an outage must start and limit too.
+      - name: Start during a Redis outage
+        run: |
+          set -euo pipefail
+          pkill -f examples/axum_redis_fallback || true
+          docker stop ${{ job.services.redis.id }}
+          target/debug/examples/axum_redis_fallback > restart.log 2>&1 &
+          trap 'echo "--- restart.log ---"; cat restart.log' EXIT
+          status() { curl -s -o /dev/null -w '%{http_code}' -H 'x-api-key: key_free' http://localhost:3000/api/data; }
+          for _ in $(seq 1 30); do
+            [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/api/data || true)" != "000" ] && break
+            sleep 1
+          done
+          for _ in 1 2 3 4 5; do test "$(status)" = 200; done
+          test "$(status)" = 429
+          grep -q 'redis down' restart.log
+          docker start ${{ job.services.redis.id }}
+          for _ in $(seq 1 30); do
+            docker exec ${{ job.services.redis.id }} redis-cli ping 2>/dev/null | grep -q PONG && break
+            sleep 1
+          done
+          for _ in $(seq 1 30); do
+            status > /dev/null
+            grep -q 'redis back' restart.log && break
+            sleep 1
+          done
+          grep -q 'redis back' restart.log
 
   fmt:
     runs-on: ubuntu-latest

@@ -10,7 +10,7 @@ use tower_rate_tier::gcra::check_gcra;
 use tower_rate_tier::identifier::{TierIdentifier, TierIdentity};
 use tower_rate_tier::storage::memory::MemoryStorage;
 use tower_rate_tier::storage::{Storage, StorageKey};
-use tower_rate_tier::{Quota, RateTier, TierLimitLayer};
+use tower_rate_tier::{CircuitBreaker, Quota, RateTier, TierLimitLayer};
 use tower_service::Service;
 
 // --- Helpers ---
@@ -91,6 +91,34 @@ fn bench_storage_single_key(c: &mut Criterion) {
     let quota = Quota::per_minute(100);
 
     c.bench_function("storage_check_single_key", |b| {
+        b.iter(|| {
+            runtime.block_on(async {
+                let _ = black_box(
+                    storage
+                        .check_and_update(
+                            StorageKey::new("user1", "free"),
+                            &quota,
+                            1,
+                            1_000_000_000,
+                        )
+                        .await,
+                );
+            });
+        });
+    });
+}
+
+/// Same as `storage_check_single_key`, through a closed circuit breaker: the
+/// difference is the breaker's cost while the primary is healthy.
+fn bench_breaker_closed_single_key(c: &mut Criterion) {
+    let runtime = rt();
+    let storage = Arc::new(CircuitBreaker::new(
+        MemoryStorage::new(),
+        MemoryStorage::new(),
+    ));
+    let quota = Quota::per_minute(100);
+
+    c.bench_function("storage_breaker_closed_single_key", |b| {
         b.iter(|| {
             runtime.block_on(async {
                 let _ = black_box(
@@ -197,6 +225,7 @@ criterion_group!(
     bench_gcra_check_allowed,
     bench_gcra_check_denied,
     bench_storage_single_key,
+    bench_breaker_closed_single_key,
     bench_storage_many_keys,
     bench_full_middleware_allowed,
     bench_full_middleware_denied,

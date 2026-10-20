@@ -1,3 +1,6 @@
+/// Circuit breaker that keeps rate limiting with local memory while the
+/// primary storage fails.
+pub mod breaker;
 /// In-memory storage backend using `DashMap`.
 pub mod memory;
 #[cfg(feature = "redis")]

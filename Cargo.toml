@@ -1,6 +1,6 @@
 [package]
 name = "tower-rate-tier"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT OR Apache-2.0"
@@ -42,6 +42,10 @@ harness = false
 
 [[example]]
 name = "axum_api_key"
+required-features = ["redis"]
+
+[[example]]
+name = "axum_redis_fallback"
 required-features = ["redis"]
 
 [features]

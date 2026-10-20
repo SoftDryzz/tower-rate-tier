@@ -66,13 +66,17 @@ found in a full review of v0.2.0.
 - [x] `StorageKey { user_id, tier }` in the `Storage` trait
 - [x] CI: feature matrix, `cargo audit`, Redis service, MSRV per feature
 
+## v0.3.1 — Redis Outages
+
+- [x] `CircuitBreaker`: keeps limiting with local memory while Redis is down
+- [x] Circuit breaker so a down Redis does not cost every request its timeout
+- [x] Example `axum_redis_fallback`, checked in CI with a real Redis stop and restart
+
 ## v0.4.0 — Operations
 
+- [ ] Tonic/gRPC support: a response body that works with Tonic, example and docs (#33)
 - [ ] Dynamic tier updates at runtime (#31)
 - [ ] Dashboard-ready metrics export (Prometheus-compatible) (#32)
-- [ ] Tonic/gRPC support: a response body that works with Tonic, example and docs (#33)
-- [ ] `OnStorageError` fallback to local memory while Redis is down
-- [ ] Circuit breaker so a down Redis does not cost every request its timeout
 - [ ] Redis Cluster tests in CI
 
 ## Future Ideas
