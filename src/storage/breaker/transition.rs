@@ -4,8 +4,6 @@
 use crate::quota::Nanos;
 
 /// Where the breaker sends requests.
-// Only `after_call` builds `Open`; remove this once it is written.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum State {
     /// Requests go to the primary storage. `failures` counts the consecutive
@@ -73,10 +71,24 @@ pub(crate) fn after_call(
     now: Nanos,
     policy: &Policy,
 ) -> State {
-    // TODO(SoftDryzz): write the transition described in the table above.
-    // `cargo test --lib breaker::transition` checks every row.
-    let _ = (state, route, outcome, now, policy);
-    todo!("after_call: the transition is not written yet")
+    let reopen = State::Open {
+        until: now.saturating_add(policy.open_for),
+    };
+    match (state, route, outcome) {
+        (State::Closed { .. }, Route::Primary, Outcome::Success)
+        | (State::HalfOpen, Route::Probe, Outcome::Success) => State::Closed { failures: 0 },
+        (State::Closed { failures }, Route::Primary, Outcome::Failure) => {
+            let failures = failures.saturating_add(1);
+            if failures >= policy.failure_threshold {
+                reopen
+            } else {
+                State::Closed { failures }
+            }
+        }
+        (State::HalfOpen, Route::Probe, Outcome::Failure) => reopen,
+        // Stale results, and probe results the breaker no longer waits for.
+        _ => state,
+    }
 }
 
 #[cfg(test)]
