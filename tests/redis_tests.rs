@@ -7,12 +7,17 @@
 //!
 //! The `use_client_clock()` tests drive time with explicit values, so they can
 //! compare the Lua script with the Rust reference `check_gcra` step by step.
+//!
+//! The test that runs `SCRIPT FLUSH` lives in `redis_script_flush.rs`: in this
+//! binary it would race with the tests running in parallel, whose retry after
+//! `NOSCRIPT` can be flushed again before it runs.
+
+mod support;
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use http::{Request, Response, StatusCode};
-use redis::aio::ConnectionManager;
 use tower_layer::Layer;
 use tower_rate_tier::storage::memory::MemoryStorage;
 use tower_rate_tier::storage::Storage;
@@ -21,33 +26,7 @@ use tower_rate_tier::{
 };
 use tower_service::Service;
 
-async fn connect() -> Option<ConnectionManager> {
-    let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
-    let required = std::env::var("TRT_REQUIRE_REDIS").is_ok_and(|v| v == "1");
-    let client = redis::Client::open(url.as_str()).expect("REDIS_URL must be a valid URL");
-
-    let error =
-        match tokio::time::timeout(Duration::from_secs(2), client.get_connection_manager()).await {
-            Ok(Ok(conn)) => return Some(conn),
-            Ok(Err(err)) => err.to_string(),
-            Err(_) => "timed out".to_owned(),
-        };
-    assert!(
-        !required,
-        "Redis is required but unreachable at {url}: {error}"
-    );
-    eprintln!("skipping: no Redis at {url} ({error})");
-    None
-}
-
-/// A key prefix no other test or earlier run shares.
-fn unique_prefix(test: &str) -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    format!("trt-test:{test}:{nanos}:")
-}
+use support::{connect, unique_prefix};
 
 fn millis(ms: u64) -> Nanos {
     ms * 1_000_000
@@ -223,35 +202,6 @@ async fn server_time_limits_a_burst() {
         "retry_after = {:?}",
         limited.retry_after
     );
-}
-
-#[tokio::test]
-async fn reloads_the_script_after_script_flush() {
-    let Some(mut conn) = connect().await else {
-        return;
-    };
-    let redis = RedisStorage::new(conn.clone()).key_prefix(unique_prefix("noscript"));
-    let key = StorageKey::new("alice", "free");
-    let quota = Quota::per_hour(10);
-
-    redis
-        .check_and_update(key, &quota, 1, 0)
-        .await
-        .unwrap()
-        .unwrap();
-    let _: () = redis::cmd("SCRIPT")
-        .arg("FLUSH")
-        .query_async(&mut conn)
-        .await
-        .unwrap();
-
-    // EVALSHA now answers NOSCRIPT; the storage must load the script again.
-    let info = redis
-        .check_and_update(key, &quota, 1, 0)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(info.remaining, 8);
 }
 
 #[derive(Clone)]
