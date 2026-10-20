@@ -37,6 +37,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Cargo 1.75 resolves to the newest dependencies even when they need a
+      # newer Rust (tokio 1.54 needs 1.85), so resolve with a current Cargo
+      # that prefers versions compatible with `rust-version`.
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo generate-lockfile
+        env:
+          CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.75"
