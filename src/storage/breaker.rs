@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -53,6 +54,9 @@ type Callback = Box<dyn Fn(&BreakerEvent<'_>) + Send + Sync>;
 ///   [`LimitEvent::StorageError`](crate::LimitEvent::StorageError) stay quiet.
 /// - The breaker has no timeout of its own. `RedisStorage` gives up after
 ///   100 ms by default; a custom primary must bound its own latency.
+/// - Create the Redis connection lazily, as in the example below, so an
+///   instance that starts during an outage can serve from the fallback:
+///   `get_connection_manager()` waits until Redis answers.
 /// - Only the limiter's storage is covered. An identifier that reads the tier
 ///   from Redis needs its own plan for an outage, such as a local cache.
 /// - The breaker keeps one state for the whole primary. With Redis Cluster,
@@ -70,12 +74,13 @@ type Callback = Box<dyn Fn(&BreakerEvent<'_>) + Send + Sync>;
 /// use std::sync::Arc;
 /// use std::time::Duration;
 ///
+/// use redis::aio::ConnectionManagerConfig;
 /// use tower_rate_tier::storage::memory::MemoryStorage;
 /// use tower_rate_tier::{BreakerEvent, CircuitBreaker, Quota, RateTier, RedisStorage};
 ///
+/// // Lazy (redis 1.2+): connects on the first command, not here.
 /// let conn = redis::Client::open("redis://127.0.0.1:6379")?
-///     .get_connection_manager()
-///     .await?;
+///     .get_connection_manager_lazy(ConnectionManagerConfig::new())?;
 ///
 /// let storage = CircuitBreaker::new(RedisStorage::new(conn), MemoryStorage::new())
 ///     .failure_threshold(3)
@@ -98,6 +103,9 @@ pub struct CircuitBreaker<P> {
     fallback: MemoryStorage,
     policy: Policy,
     state: Mutex<State>,
+    /// When the fallback was last pruned, so it is pruned at most once per
+    /// `open_for` while failures come and go without opening the breaker.
+    last_pruned: AtomicU64,
     on_state_change: Option<Callback>,
 }
 
@@ -142,6 +150,7 @@ impl<P: Storage> CircuitBreaker<P> {
                 open_for: duration_nanos(DEFAULT_OPEN_FOR),
             },
             state: Mutex::new(State::Closed { failures: 0 }),
+            last_pruned: AtomicU64::new(0),
             on_state_change: None,
         }
     }
@@ -200,6 +209,27 @@ impl<P: Storage> CircuitBreaker<P> {
             callback(event);
         }
     }
+
+    /// Drops the fallback's expired entries. Their buckets are full again,
+    /// so this never changes a decision; it only bounds the memory.
+    fn prune_fallback(&self, now: Nanos) {
+        self.last_pruned.store(now, Ordering::Relaxed);
+        self.fallback.retain_active(now);
+    }
+
+    /// Prunes the fallback if it was not pruned in the last `open_for`, so
+    /// failures that never open the breaker cannot make it grow forever.
+    fn prune_fallback_if_due(&self, now: Nanos) {
+        let last = self.last_pruned.load(Ordering::Relaxed);
+        if now.saturating_sub(last) >= self.policy.open_for
+            && self
+                .last_pruned
+                .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        {
+            self.fallback.retain_active(now);
+        }
+    }
 }
 
 impl<P> CircuitBreaker<P> {
@@ -235,7 +265,7 @@ impl<P: Storage> Storage for CircuitBreaker<P> {
             // guard as soon as this function returns.
             let mut probe_guard = probe_guard;
             if route == Route::Probe {
-                self.fallback.retain_active(now);
+                self.prune_fallback(now);
             }
 
             let result = self.primary.check_and_update(key, quota, cost, now).await;
@@ -262,8 +292,10 @@ impl<P: Storage> Storage for CircuitBreaker<P> {
                 Err(error) => {
                     self.emit(&BreakerEvent::PrimaryFailed { error: &error });
                     if matches!(old, State::Closed { .. }) && matches!(new, State::Open { .. }) {
-                        self.fallback.retain_active(now);
+                        self.prune_fallback(now);
                         self.emit(&BreakerEvent::Opened { error: &error });
+                    } else {
+                        self.prune_fallback_if_due(now);
                     }
                     self.fallback.check_and_update(key, quota, cost, now).await
                 }
@@ -831,6 +863,40 @@ mod tests {
 
         assert_eq!(breaker.primary.calls(), 4);
         assert_eq!(breaker.fallback.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn sporadic_failures_do_not_grow_the_fallback() {
+        // Every other call fails, so the breaker never opens, but each
+        // failure is answered (and stored) by the fallback.
+        let steps: Vec<Step> = (0..1000)
+            .map(|i| {
+                if i % 2 == 0 {
+                    Step::Fail("blip")
+                } else {
+                    Step::Allow
+                }
+            })
+            .collect();
+        let breaker = CircuitBreaker::new(Scripted::new(&steps, Step::Allow), MemoryStorage::new());
+        let quota = Quota::per_second(10);
+
+        for i in 0..1000u64 {
+            let user = format!("user{i}");
+            let decision = breaker
+                .check_and_update(StorageKey::new(&user, "free"), &quota, 1, i * S)
+                .await;
+            assert!(decision.is_ok());
+        }
+
+        // Each entry expired 100 ms after its request. Only the failures of
+        // the last open_for (5 s) may still be there.
+        assert!(
+            breaker.fallback.len() <= 5,
+            "fallback kept {} expired entries",
+            breaker.fallback.len()
+        );
+        assert!(matches!(*breaker.lock_state(), State::Closed { .. }));
     }
 }
 
