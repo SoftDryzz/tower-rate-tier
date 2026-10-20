@@ -866,6 +866,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn finished_probe_does_not_release_a_newer_probe() {
+        // With a 1 ns open period, the PrimaryFailed callback of a failed
+        // probe can already admit the next probe. The first probe's guard
+        // must not then put the breaker back to open and let a third one in.
+        let cell: Arc<OnceLock<Weak<CircuitBreaker<Scripted>>>> = Arc::new(OnceLock::new());
+        let callback = {
+            let cell = Arc::clone(&cell);
+            move |event: &BreakerEvent<'_>| {
+                let BreakerEvent::PrimaryFailed { error, .. } = event else {
+                    return;
+                };
+                if !error.to_string().contains("probe") {
+                    return;
+                }
+                let breaker = cell.get().and_then(Weak::upgrade).unwrap();
+                let quota = quota();
+                let newer = breaker.check_and_update(StorageKey::new("u1", "free"), &quota, 1, 20);
+                // Keep the newer probe in flight: never polled, never dropped.
+                std::mem::forget(newer);
+            }
+        };
+        let breaker = Arc::new(
+            CircuitBreaker::new(
+                Scripted::new(&[Step::Fail("first"), Step::Fail("probe")], Step::Allow),
+                MemoryStorage::new(),
+            )
+            .failure_threshold(1)
+            .open_for(Duration::from_nanos(1))
+            .on_state_change(callback),
+        );
+        cell.set(Arc::downgrade(&breaker)).unwrap();
+
+        serve(&breaker, 0).await;
+        serve(&breaker, 10).await;
+        assert_eq!(*breaker.lock_state(), State::HalfOpen);
+
+        // The newer probe still owns the half-open state.
+        serve(&breaker, 30).await;
+        assert_eq!(breaker.primary.calls(), 2);
+    }
+
+    #[tokio::test]
     async fn sporadic_failures_do_not_grow_the_fallback() {
         // Every other call fails, so the breaker never opens, but each
         // failure is answered (and stored) by the fallback.
