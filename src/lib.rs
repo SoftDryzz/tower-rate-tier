@@ -59,6 +59,7 @@ pub use on_missing::OnMissing;
 pub use on_storage_error::OnStorageError;
 pub use on_unknown_tier::OnUnknownTier;
 pub use quota::{Nanos, Quota};
+pub use storage::breaker::{BreakerEvent, CircuitBreaker};
 pub use storage::{StorageError, StorageKey};
 pub use tier::{CheckError, RateTier};
 

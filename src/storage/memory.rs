@@ -39,6 +39,11 @@ impl MemoryStorage {
     pub fn retain_active(&self, now: Nanos) {
         self.state.retain(|_, tat| *tat >= now);
     }
+
+    /// Removes every tracked key, so every user starts with a full quota.
+    pub fn clear(&self) {
+        self.state.clear();
+    }
 }
 
 impl Default for MemoryStorage {
@@ -103,5 +108,18 @@ mod tests {
 
         assert!(out.contains("entries: 1"), "{out}");
         assert!(!out.contains("secret-api-key"), "{out}");
+    }
+
+    #[test]
+    fn clear_removes_every_entry() {
+        let storage = MemoryStorage::new();
+        storage.state.insert(("a".to_owned(), "free".to_owned()), 1);
+        storage
+            .state
+            .insert(("b".to_owned(), "pro".to_owned()), u64::MAX);
+
+        storage.clear();
+
+        assert!(storage.is_empty());
     }
 }

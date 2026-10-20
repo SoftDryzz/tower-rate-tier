@@ -4,6 +4,8 @@
 use crate::quota::Nanos;
 
 /// Where the breaker sends requests.
+// Only `after_call` builds `Open`; remove this once it is written.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum State {
     /// Requests go to the primary storage. `failures` counts the consecutive
